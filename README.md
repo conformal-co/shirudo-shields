@@ -10,6 +10,7 @@ in [`keys/conformal.der`](keys/conformal.der).
 <!-- shields:table:begin -->
 | Package | Bug | Hook | Version | Kernel lines | Status |
 |---|---|---|---|---|---|
+| [`copy-fail`](shields/CVE-2026-31431-copy-fail-af-alg/) | Copy Fail (CVE-2026-31431) | `lsm/socket_bind` | 1.0.0 | 5.14.0, 6.1, 6.4.0, 6.8.0, 6.12 | published |
 <!-- shields:table:end -->
 
 ```

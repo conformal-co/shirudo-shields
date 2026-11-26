@@ -156,6 +156,10 @@ def check_beefile(directory: Path, shield: dict, report: Report) -> None:
         for rodata in up.get("rodata", []):
             check_generator(directory, rodata, report)
         selector = up.get("tree", {}).get("selector", {})
+        arch = selector.get("architecture")
+        if sorted(arch or []) != sorted(sl.architectures(shield)):
+            report.error(where, f"Beefile selector architecture {arch!r} != {sl.architectures(shield)}: "
+                         "a host of another architecture must refuse the package")
         check_selector(where, shield, selector.get("kernel_release_prefix", []), report)
         if any(h["needs_bpf_lsm"] for h in shield["hooks"]) and "CONFIG_BPF_LSM" not in selector.get("kconfig", {}):
             report.warn(where, "a hook needs the BPF LSM but the Beefile selector has no CONFIG_BPF_LSM")

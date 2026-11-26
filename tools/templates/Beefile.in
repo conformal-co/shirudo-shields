@@ -25,6 +25,7 @@ id = "@SLUG@"
 # The kernel lines (shield.toml [[versions.lines]]); a prefix matches
 # uname -r at a ".", "-" or the end.
 [upatches.tree.selector]
+architecture = ["x86_64"]
 kernel_release_prefix = ["6.8.0"]
 
 [upatches.tree.selector.kconfig]
