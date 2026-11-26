@@ -10,9 +10,9 @@ in [`keys/conformal.der`](keys/conformal.der).
 <!-- shields:table:begin -->
 | Package | Bug | Hook | Version | Kernel lines | Status |
 |---|---|---|---|---|---|
-| [`copy-fail`](shields/CVE-2026-31431-copy-fail-af-alg/) | Copy Fail (CVE-2026-31431) | `lsm/socket_bind` | 1.0.0 | 5.14.0, 6.1, 6.4, 6.6, 6.8, 6.11, 6.12, 6.14, 6.17, 6.18 | published |
-| [`cve-2026-98432`](shields/CVE-2026-98432-tcp-ip-options/) | IPv4 TCP IP options (CVE-2026-98432) | `cgroup_skb/ingress` | 1.0.0 | 5.14.0, 6.1, 6.4.0, 6.8.0, 6.12, 7.0.0, 7.2 | published |
-| [`cve-2026-99567`](shields/CVE-2026-99567-assoc-array/) | assoc_array keyring (CVE-2026-99567) | `lsm/key_permission`, `lsm/key_alloc`, `lsm/task_free` + 8 helpers | 1.0.0 | 5.14.0, 6.1, 6.8.0, 6.12, 7.0.0, 7.2, 7.3 | published |
+| [`copy-fail`](shields/CVE-2026-31431-copy-fail-af-alg/) | Copy Fail (CVE-2026-31431) | `lsm/socket_bind` | 1.0.0 | 5.14, 6.1–6.18 | published |
+| [`cve-2026-98432`](shields/CVE-2026-98432-tcp-ip-options/) | IPv4 TCP IP options (CVE-2026-98432) | `cgroup_skb/ingress` | 1.0.0 | 5.14, 6.1–7.2 | published |
+| [`cve-2026-99567`](shields/CVE-2026-99567-assoc-array/) | assoc_array keyring (CVE-2026-99567) | `lsm/key_permission`, `lsm/key_alloc`, `lsm/task_free` + 8 helpers | 1.0.0 | 5.14, 6.1–7.3 | published |
 <!-- shields:table:end -->
 
 ```
