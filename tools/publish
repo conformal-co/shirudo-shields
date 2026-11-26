@@ -384,10 +384,10 @@ def build_packages(wants: list[Want], args: argparse.Namespace, out: Path,
 
 
 def tree_package_builder(args: argparse.Namespace, relay: SignerRelay):
-    """Builds one tree package of the version main builds (tools/treepub.py)."""
-    def build(b: tp.Build, kind: str, line: tp.Line, work: Path) -> Path:
-        sel = tp.add_selector(b.shield, line) if kind == "add" else tp.delete_selector(b.shield, line)
-        tag = tp.Op(kind, b, line).tag
+    """Builds one tree package from b.directory (tools/treepub.py); a rebuild must give b.payload."""
+    def build(b: tp.Build, kind: str, prefixes: tp.Prefixes, work: Path) -> Path:
+        sel = tp.add_selector(b.shield, prefixes) if kind == "add" else tp.delete_selector(b.shield, prefixes)
+        tag = tp.Op(kind, b, prefixes).tag
         src = work / "tree-src" / tag
         tp.tree_sources(b.directory, src, b.name, sel)
         dest = work / "tree-bee" / tag
@@ -401,9 +401,12 @@ def tree_package_builder(args: argparse.Namespace, relay: SignerRelay):
         if docker(*cmd, check=False).returncode:
             raise Refused(f"bpm build {tag} failed")
         path = dest / f"{b.package}-{b.version}.bee"
-        names = [n for n, _ in bee_content(path.read_bytes())["payloads"]]
+        payloads = bee_content(path.read_bytes())["payloads"]
+        names = [n for n, _ in payloads]
         if names != [b.name]:
             raise Refused(f"{tag}: the package holds {names}, not the upatch {b.name}")
+        if b.payload and (payloads[0][1] or "").removeprefix("sha256:") != b.payload.removeprefix("sha256:"):
+            raise Refused(f"{tag}: rebuilt {b.name} has payload {payloads[0][1]}, the tree holds {b.payload}")
         return path
     return build
 
@@ -608,7 +611,8 @@ def run(args: argparse.Namespace) -> int:
             final_digest = live_digest
             log("the index already lists exactly the published set")
         ops = tp.plan(tree, shields)
-        tree_bees = tp.packages(target, ns, ops, work, tree_package_builder(args, relay), log)
+        tree_bees = tp.packages(target, ns, ops, work, tree_package_builder(args, relay), log,
+                                tree.payloads())
         expect = tp.wanted(shields, tp.known_builds(shields), tree.live())
         tp.publish(target, ns, endpoint, tree, ops, tree_bees, tree_append(args, relay, endpoint), expect, log)
     if catalog_needed:
