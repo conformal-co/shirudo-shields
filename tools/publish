@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
 # Copyright (c) 2026 Conformal Shield Registry contributors
-"""Make the signed bpm index and upatch tree of a registry namespace hold what main publishes.
+"""Make the signed bpm index, upatch tree and shield catalog of a registry namespace hold what main publishes.
 
     tools/publish --registry HOST --namespace NS --dry-run
     tools/publish --registry HOST --namespace NS --cert FILE --signer CMD --shirudo-src DIR
@@ -22,6 +22,10 @@ withdrawn. <NS>/bpm-index:stable then lists exactly those packages at
      index has not moved, copy everything over, the index tag last.
   5. Update the upatch tree hosts follow with `bpm tree sync`
      (tools/treepub.py), in one atomic move of <NS>/upatch-tree:stable.
+  6. Push catalog/shield-registry.json as <NS>/shield-catalog:stable when
+     it differs from the live one. The catalog is not signed: installers
+     read it for names, distro fixes and relevance, never for which build
+     loads (that is the signed index's).
 
 Registry credentials: PUBLISH_REGISTRY_USERNAME, PUBLISH_REGISTRY_PASSWORD
 (used here only, never passed to a container). There is no key file:
@@ -62,6 +66,11 @@ PACKAGE_MEDIA = "application/vnd.shirudo.bpm.package.v1+gzip"
 # registry:3.0.0, pinned; only ever bound to loopback.
 STAGING_IMAGE = "registry@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e"
 RESERVED = {"build-environment.json", "cert.der"}
+CATALOG_REPOSITORY = "shield-catalog"
+CATALOG_TAG = "stable"
+CATALOG_MEDIA = "application/vnd.conformal.shield-catalog.v1+json"
+EMPTY_MEDIA = "application/vnd.oci.empty.v1+json"
+EMPTY_BLOB = b"{}"
 
 
 def log(msg: str) -> None:
@@ -124,6 +133,51 @@ def index_digest(reg: oci.Registry, ns: str) -> str | None:
         return reg.get_manifest(f"{ns}/{INDEX_REPOSITORY}", INDEX_TAG)[1]
     except oci.NotFound:
         return None
+
+
+# ------------------------------------------------------------ shield catalog
+
+
+@dataclass
+class Catalog:
+    data: bytes
+    manifest: bytes
+
+    @property
+    def digest(self) -> str:
+        return oci.sha256_digest(self.manifest)
+
+
+def catalog_artifact() -> Catalog:
+    """catalog/shield-registry.json as an OCI artifact; the same bytes give the same digest."""
+    data = sl.REGISTRY.read_bytes()
+    manifest = {
+        "schemaVersion": 2,
+        "mediaType": oci.MANIFEST_MEDIA,
+        "artifactType": CATALOG_MEDIA,
+        "config": {"mediaType": EMPTY_MEDIA, "digest": oci.sha256_digest(EMPTY_BLOB), "size": len(EMPTY_BLOB)},
+        "layers": [{"mediaType": CATALOG_MEDIA, "digest": oci.sha256_digest(data), "size": len(data),
+                    "annotations": {"org.opencontainers.image.title": sl.REGISTRY.name}}],
+    }
+    return Catalog(data, json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode())
+
+
+def catalog_digest(reg: oci.Registry, ns: str) -> str | None:
+    try:
+        return reg.get_manifest(f"{ns}/{CATALOG_REPOSITORY}", CATALOG_TAG)[1]
+    except oci.NotFound:
+        return None
+
+
+def push_catalog(reg: oci.Registry, ns: str, catalog: Catalog) -> None:
+    repo = f"{ns}/{CATALOG_REPOSITORY}"
+    reg.put_blob(repo, EMPTY_BLOB, oci.sha256_digest(EMPTY_BLOB))
+    reg.put_blob(repo, catalog.data, oci.sha256_digest(catalog.data))
+    reg.put_manifest(repo, catalog.digest, catalog.manifest, oci.MANIFEST_MEDIA)
+    reg.put_manifest(repo, CATALOG_TAG, catalog.manifest, oci.MANIFEST_MEDIA)
+    if catalog_digest(reg, ns) != catalog.digest:
+        raise Refused(f"{repo}:{CATALOG_TAG} does not read back as the catalog pushed")
+    log(f"{repo}:{CATALOG_TAG} -> {catalog.digest}")
 
 
 # ------------------------------------------------------------ package content
@@ -484,10 +538,18 @@ def run(args: argparse.Namespace) -> int:
             print(op.describe())
     else:
         print("= the tree holds what each kernel line should run")
+    catalog = catalog_artifact()
+    live_catalog = catalog_digest(target, ns)
+    catalog_needed = live_catalog != catalog.digest
+    print(f"# oci://{args.registry}/{ns}/{CATALOG_REPOSITORY}:{CATALOG_TAG} ({live_catalog or 'no catalog yet'})")
+    print(f"{'+' if catalog_needed else '='} {sl.REGISTRY.relative_to(sl.ROOT)} {catalog.digest}")
     if args.dry_run:
         return 0
     if not add and not remove and not tree_needed:
-        log("the index and the tree hold exactly the published set: nothing to push")
+        if catalog_needed:
+            push_catalog(target, ns, catalog)
+        else:
+            log("the index, the tree and the catalog hold exactly the published set: nothing to push")
         return 0
 
     if not args.signer:
@@ -535,6 +597,8 @@ def run(args: argparse.Namespace) -> int:
         tree_bees = tp.packages(target, ns, ops, work, tree_package_builder(args, relay), log)
         expect = tp.wanted(shields, tp.known_builds(shields), tree.live())
         tp.publish(target, ns, endpoint, tree, ops, tree_bees, tree_append(args, relay, endpoint), expect, log)
+    if catalog_needed:
+        push_catalog(target, ns, catalog)
     print(f"published oci://{args.registry}/{ns}/{INDEX_REPOSITORY}:{INDEX_TAG} {final_digest}")
     return 0
 
