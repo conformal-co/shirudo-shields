@@ -1722,8 +1722,8 @@
           "targets": [
             {
               "product": "Linux kernel",
-              "component": "AlmaLinux 9",
-              "versions": "all (no fix released)",
+              "component": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
+              "versions": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
@@ -1734,8 +1734,8 @@
             },
             {
               "product": "Linux kernel",
-              "component": "Debian 12 (cloud)",
-              "versions": "all (no fix released)",
+              "component": "6.1 (Debian 12, Amazon Linux 2023 kernel 6.1)",
+              "versions": "6.1 (Debian 12, Amazon Linux 2023 kernel 6.1)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
@@ -1746,20 +1746,32 @@
             },
             {
               "product": "Linux kernel",
-              "component": "Ubuntu 24.04 (6.8 generic)",
-              "versions": "all (no fix released)",
+              "component": "6.8 (Ubuntu 24.04 generic and cloud)",
+              "versions": "6.8 (Ubuntu 24.04 generic and cloud)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
-              "kernel_line": "6.8 (Ubuntu 24.04 generic, linux-aws/gcp/azure-lts-24.04)",
+              "kernel_line": "6.8 (Ubuntu 24.04 generic and cloud)",
               "kernel_release_prefix": [
-                "6.8.0"
+                "6.8"
               ]
             },
             {
               "product": "Linux kernel",
-              "component": "Debian 13 (cloud)",
-              "versions": "< 6.12.118-1",
+              "component": "6.11 (Ubuntu 24.04 HWE/OEM 6.11)",
+              "versions": "6.11 (Ubuntu 24.04 HWE/OEM 6.11)",
+              "architecture": "x86_64",
+              "binding": "KERNEL_HOOK",
+              "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
+              "kernel_line": "6.11 (Ubuntu 24.04 HWE/OEM 6.11)",
+              "kernel_release_prefix": [
+                "6.11"
+              ]
+            },
+            {
+              "product": "Linux kernel",
+              "component": "6.12 (RHEL/Alma/Rocky/CentOS 10, Debian 13, Oracle UEK8, Flatcar, AL2023 kernel6.12)",
+              "versions": "6.12 (RHEL/Alma/Rocky/CentOS 10, Debian 13, Oracle UEK8, Flatcar, AL2023 kernel6.12)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
@@ -1770,20 +1782,56 @@
             },
             {
               "product": "Linux kernel",
-              "component": "Ubuntu 26.04",
-              "versions": "all (no fix released)",
+              "component": "6.14 (Ubuntu 24.04 HWE/OEM 6.14)",
+              "versions": "6.14 (Ubuntu 24.04 HWE/OEM 6.14)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
-              "kernel_line": "7.0 (Ubuntu 26.04; Ubuntu 24.04 HWE and linux-aws/gcp/azure)",
+              "kernel_line": "6.14 (Ubuntu 24.04 HWE/OEM 6.14)",
               "kernel_release_prefix": [
-                "7.0.0"
+                "6.14"
               ]
             },
             {
               "product": "Linux kernel",
-              "component": "Fedora 45",
-              "versions": "all (no fix released)",
+              "component": "6.17 (Ubuntu 24.04 HWE/OEM 6.17)",
+              "versions": "6.17 (Ubuntu 24.04 HWE/OEM 6.17)",
+              "architecture": "x86_64",
+              "binding": "KERNEL_HOOK",
+              "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
+              "kernel_line": "6.17 (Ubuntu 24.04 HWE/OEM 6.17)",
+              "kernel_release_prefix": [
+                "6.17"
+              ]
+            },
+            {
+              "product": "Linux kernel",
+              "component": "6.18 (longterm)",
+              "versions": "6.18 (longterm)",
+              "architecture": "x86_64",
+              "binding": "KERNEL_HOOK",
+              "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
+              "kernel_line": "6.18 (longterm)",
+              "kernel_release_prefix": [
+                "6.18"
+              ]
+            },
+            {
+              "product": "Linux kernel",
+              "component": "7.0 (Ubuntu 26.04, Ubuntu 24.04 HWE and cloud)",
+              "versions": "7.0 (Ubuntu 26.04, Ubuntu 24.04 HWE and cloud)",
+              "architecture": "x86_64",
+              "binding": "KERNEL_HOOK",
+              "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
+              "kernel_line": "7.0 (Ubuntu 26.04, Ubuntu 24.04 HWE and cloud)",
+              "kernel_release_prefix": [
+                "7.0"
+              ]
+            },
+            {
+              "product": "Linux kernel",
+              "component": "7.2 (Fedora 44/45, Fedora CoreOS)",
+              "versions": "7.2 (Fedora 44/45, Fedora CoreOS)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
@@ -1794,8 +1842,8 @@
             },
             {
               "product": "Linux kernel",
-              "component": "Fedora 45",
-              "versions": "all (no fix released)",
+              "component": "7.3 (Fedora 44/45 stable 7.3.4 and earlier, FCOS, Arch linux before 7.3.5.arch1-1)",
+              "versions": "7.3 (Fedora 44/45 stable 7.3.4 and earlier, FCOS, Arch linux before 7.3.5.arch1-1)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
