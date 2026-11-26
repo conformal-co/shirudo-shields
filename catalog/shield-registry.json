@@ -18,18 +18,6 @@
           "targets": [
             {
               "product": "Linux kernel",
-              "component": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
-              "versions": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
-              "architecture": "x86_64",
-              "binding": "KERNEL_HOOK",
-              "binding_detail": "lsm/socket_bind; needs BPF LSM",
-              "kernel_line": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
-              "kernel_release_prefix": [
-                "5.14.0"
-              ]
-            },
-            {
-              "product": "Linux kernel",
               "component": "6.1 (Debian 12, Amazon Linux 2023)",
               "versions": "6.1 (Debian 12, Amazon Linux 2023)",
               "architecture": "x86_64",
@@ -878,18 +866,6 @@
           "targets": [
             {
               "product": "Linux kernel",
-              "component": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
-              "versions": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
-              "architecture": "x86_64",
-              "binding": "NETWORK",
-              "binding_detail": "cgroup_skb/ingress; no BPF LSM needed",
-              "kernel_line": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
-              "kernel_release_prefix": [
-                "5.14.0"
-              ]
-            },
-            {
-              "product": "Linux kernel",
               "component": "6.1 (Debian 12, Amazon Linux 2023)",
               "versions": "6.1 (Debian 12, Amazon Linux 2023)",
               "architecture": "x86_64",
@@ -1720,18 +1696,6 @@
           "version": "1.0.0",
           "status": "published",
           "targets": [
-            {
-              "product": "Linux kernel",
-              "component": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
-              "versions": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
-              "architecture": "x86_64",
-              "binding": "KERNEL_HOOK",
-              "binding_detail": "lsm/key_permission; needs BPF LSM + fexit/__x64_sys_keyctl; no BPF LSM needed + fexit/__x64_sys_request_key; no BPF LSM needed + fexit/request_key_tag; no BPF LSM needed + fexit/request_key_with_auxdata; no BPF LSM needed + lsm/key_alloc; needs BPF LSM + fexit/look_up_user_keyrings; no BPF LSM needed + fexit/__ia32_compat_sys_keyctl; no BPF LSM needed + fexit/__ia32_sys_add_key; no BPF LSM needed + fexit/__ia32_sys_request_key; no BPF LSM needed + lsm/task_free; needs BPF LSM",
-              "kernel_line": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
-              "kernel_release_prefix": [
-                "5.14.0"
-              ]
-            },
             {
               "product": "Linux kernel",
               "component": "6.1 (Debian 12, Amazon Linux 2023 kernel 6.1)",
