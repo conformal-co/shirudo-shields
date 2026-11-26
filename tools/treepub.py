@@ -9,33 +9,42 @@ carries the label shield.<package>=auto, which the installer writes to
 Each shield version is its own upatch, <upatch>-<version>: one name, one
 payload, ever, so a delete never meets another payload under its name.
 
-Per kernel line (a [[versions.lines]] entry), each release, in one atomic
-move of `stable`:
-  1. add the build each line should run: the newest published version on
-     the lines it covers, else the older build already there;
-  2. delete a build from each line it no longer serves, everywhere once it
-     serves none, and every build of a withdrawn shield or version.
+Each kernel line (a [[versions.lines]] entry) runs one build: the newest
+published version on the lines it covers, else the older build already
+there. Each release, in one atomic move of `stable`:
+  1. one add per build, its selector listing every kernel_release_prefix of
+     the lines that run it;
+  2. one delete per build for the lines it no longer serves, everywhere
+     once it serves none, and every build of a withdrawn shield or version.
 Adds come first, so a line's old build unloads only after the new one
 loaded; adds are republished every release for hosts that changed line or
-label since.
+label since. Builds split only where lines run different versions.
 
 Selectors are signed into the package, so each operation is a package of
-its own (per build: an add and a delete per line, one delete-everywhere),
-kept at <namespace>/upatch-tree-packages for later releases. The appends
-run in a staging registry answering under the endpoint's host name; the
-result is copied to the target, `stable` last.
+its own, tagged by build, op and prefix set, kept at
+<namespace>/upatch-tree-packages: a release whose operation is unchanged
+reuses its package. A version main builds gets its add and its
+delete-everywhere at once; an older build that needs a new prefix set is
+rebuilt from the git commit that last built it, and refused unless its
+payload is the one the tree already holds under its name. The appends run
+in a staging registry answering under the endpoint's host name; the result
+is copied to the target, `stable` last.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
+import io
 import json
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
-from dataclasses import dataclass, field
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -54,7 +63,7 @@ LABEL_VALUE = "auto"
 EVERYWHERE = ()
 STAGING_IMAGE = "registry@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e"
 
-Line = tuple[str, ...]          # a kernel line: its sorted kernel_release_prefix values
+Prefixes = tuple[str, ...]      # sorted kernel_release_prefix values of one or more lines
 
 
 class TreeError(RuntimeError):
@@ -85,29 +94,26 @@ def build_name(upatch: str, version: str) -> str:
     return f"{upatch}-{version}"
 
 
-def line_of(line: dict[str, Any]) -> Line:
-    return tuple(sorted(line["kernel_release_prefix"]))
-
-
-def line_tag(line: Line) -> str:
-    return hashlib.sha256(",".join(line).encode()).hexdigest()[:12] if line else "all"
+def prefixes_tag(prefixes: Prefixes) -> str:
+    """For one line's prefixes the tag a per-line package had, so those stay found."""
+    return hashlib.sha256(",".join(prefixes).encode()).hexdigest()[:12] if prefixes else "all"
 
 
 # ------------------------------------------------------------ selectors and Beefiles
 
 
-def add_selector(shield: dict[str, Any], line: Line) -> dict[str, Any]:
-    out: dict[str, Any] = {"kernel_release_prefix": list(line), "architecture": sorted(sl.architectures(shield)),
+def add_selector(shield: dict[str, Any], prefixes: Prefixes) -> dict[str, Any]:
+    out: dict[str, Any] = {"kernel_release_prefix": list(prefixes), "architecture": sorted(sl.architectures(shield)),
                            "labels": {label_key(shield["package"]): [LABEL_VALUE]}}
     if any(h.get("needs_bpf_lsm") for h in shield.get("hooks", [])):
         out["kconfig"] = {"CONFIG_BPF_LSM": ["y"]}
     return out
 
 
-def delete_selector(shield: dict[str, Any], line: Line) -> dict[str, Any]:
+def delete_selector(shield: dict[str, Any], prefixes: Prefixes) -> dict[str, Any]:
     out: dict[str, Any] = {"labels": {label_key(shield["package"]): [LABEL_VALUE]}}
-    if line:
-        out["kernel_release_prefix"] = list(line)
+    if prefixes:
+        out["kernel_release_prefix"] = list(prefixes)
     return out
 
 
@@ -193,18 +199,22 @@ class Tree:
     digest: str | None              # of the manifest `stable` names, None without a tree
     operations: list[dict[str, Any]]
 
-    def live(self) -> set[tuple[str, Line]]:
-        """(build, line) pairs an add put there and no delete took away."""
-        out: set[tuple[str, Line]] = set()
+    def live(self) -> set[tuple[str, str]]:
+        """(build, kernel_release_prefix) pairs an add put there and no delete took away."""
+        out: set[tuple[str, str]] = set()
         for op in self.operations:
-            line = tuple(sorted((op.get("selector") or {}).get("kernel_release_prefix") or []))
+            prefixes = (op.get("selector") or {}).get("kernel_release_prefix") or []
             if op["op"] == "add":
-                out.add((op["id"], line))
-            elif line:
-                out.discard((op["id"], line))
+                out |= {(op["id"], p) for p in prefixes}
+            elif prefixes:
+                out -= {(op["id"], p) for p in prefixes}
             else:
                 out = {pair for pair in out if pair[0] != op["id"]}
         return out
+
+    def payloads(self) -> dict[str, str]:
+        """Build -> the payload_sha256 its adds carry."""
+        return {op["id"]: op["artifact"]["payload_sha256"] for op in self.operations if op["op"] == "add"}
 
 
 def read_tree(reg: oci.Registry, repo: str) -> Tree:
@@ -233,21 +243,23 @@ class Build:
     name: str                       # <upatch>-<version>
     directory: Path | None          # the sources, for the version main builds
     shield: dict[str, Any]
-    lines: list[Line] = field(default_factory=list)
+    prefixes: Prefixes = ()         # of every line the version covers
+    home: Path | None = None        # the shield's directory in main
+    payload: str | None = None      # the payload_sha256 a rebuild must give
 
 
 @dataclass
 class Op:
     op: str                         # add or delete
     build: Build
-    line: Line                      # EVERYWHERE for a delete-everywhere
+    prefixes: Prefixes              # EVERYWHERE for a delete-everywhere
 
     @property
     def tag(self) -> str:
-        return f"{self.build.name}-{self.op}-{line_tag(self.line)}"
+        return f"{self.build.name}-{self.op}-{prefixes_tag(self.prefixes)}"
 
     def describe(self) -> str:
-        where = ",".join(self.line) if self.line else "everywhere"
+        where = ",".join(self.prefixes) if self.prefixes else "everywhere"
         return f"{'+' if self.op == 'add' else '-'} tree {self.op} {self.build.name} ({where})"
 
 
@@ -261,29 +273,37 @@ def known_builds(shields: list[tuple[Path, dict[str, Any]]]) -> dict[str, Build]
             name = build_name(upatch, version["version"])
             out[name] = Build(shield["package"], version["version"], name,
                               directory if version is newest else None, shield,
-                              sorted({line_of(l) for l in version["lines"]}))
+                              tuple(sorted({p for l in version["lines"] for p in l["kernel_release_prefix"]})),
+                              directory)
     return out
 
 
 def wanted(shields: list[tuple[Path, dict[str, Any]]], builds: dict[str, Build],
-           live: set[tuple[str, Line]]) -> set[tuple[str, Line]]:
-    """(build, line) pairs the tree should hold after this release."""
-    out: set[tuple[str, Line]] = set()
+           live: set[tuple[str, str]]) -> set[tuple[str, str]]:
+    """(build, kernel_release_prefix) pairs the tree should hold after this release."""
+    out: set[tuple[str, str]] = set()
     for directory, shield in shields:
         current = sl.published_version(shield)
         if current is None:
             continue
         upatch = upatch_name(sl.load_toml(directory / "Beefile"))
         newest = builds[build_name(upatch, current["version"])]
-        covered = set(newest.lines)
-        out |= {(newest.name, line) for line in covered}
-        for name, line in live:
+        covered = set(newest.prefixes)
+        out |= {(newest.name, p) for p in covered}
+        for name, p in sorted(live):
             old = builds.get(name)
-            if (old and old.package == shield["package"] and line not in covered
+            if (old and old.package == shield["package"] and name != newest.name and p not in covered
                     and not sl.withdrawn_reason(shield, _version(shield, old.version))):
-                out.add((name, line))
-                covered.add(line)
+                out.add((name, p))
+                covered.add(p)
     return out
+
+
+def _grouped(pairs: set[tuple[str, str]]) -> dict[str, Prefixes]:
+    out: dict[str, set[str]] = {}
+    for name, p in pairs:
+        out.setdefault(name, set()).add(p)
+    return {name: tuple(sorted(ps)) for name, ps in sorted(out.items())}
 
 
 def _version(shield: dict[str, Any], version: str) -> dict[str, Any]:
@@ -299,11 +319,12 @@ def plan(tree: Tree, shields: list[tuple[Path, dict[str, Any]]]) -> list[Op]:
     for name, _ in live:
         builds.setdefault(name, Build("", "", name, None, {}))
     want = wanted(shields, builds, live)
-    ops = [Op("add", builds[name], line) for name, line in sorted(want)]
+    ops = [Op("add", builds[name], prefixes) for name, prefixes in _grouped(want).items()]
     serving = {name for name, _ in want}
     retired = sorted({name for name, _ in live if name not in serving})
     ops += [Op("delete", builds[name], EVERYWHERE) for name in retired]
-    ops += [Op("delete", builds[name], line) for name, line in sorted(live - want) if name in serving]
+    ops += [Op("delete", builds[name], prefixes) for name, prefixes in _grouped(live - want).items()
+            if name in serving]
     return ops
 
 
@@ -416,30 +437,66 @@ class TreeStaging:
         return ["-v", f"{self.hosts}:/etc/hosts:ro", "-e", "BPM_OCI_SCHEME=http"]
 
 
-BuildPackage = Callable[[Build, str, Line, Path], Path]
+BuildPackage = Callable[[Build, str, Prefixes, Path], Path]
 RunAppend = Callable[[TreeStaging, list[tuple[Path, str]]], None]
 
 
-def packages(target: oci.Registry, ns: str, ops: list[Op], work: Path,
-             build: BuildPackage, log: Callable[[str], None]) -> list[Path]:
-    """The package of each operation: kept, or built from main and kept.
+def _git(*args: str) -> bytes:
+    return subprocess.run(["git", "-C", str(sl.ROOT), *args], check=True, stdout=subprocess.PIPE).stdout
 
-    A version main builds gets all its packages at once (an add and a delete
-    per line, a delete everywhere), so that later releases find them."""
+
+def version_sources(home: Path, version: str, dest: Path) -> bool:
+    """The shield's sources at dest as of the newest commit whose newest version
+    is version; False when no commit is."""
+    rel = home.relative_to(sl.ROOT).as_posix()
+    for commit in _git("log", "--format=%H", "--", f"{rel}/shield.toml").decode().split():
+        try:
+            shield = tomllib.loads(_git("show", f"{commit}:{rel}/shield.toml").decode())
+        except (subprocess.CalledProcessError, tomllib.TOMLDecodeError):
+            continue
+        newest = sl.current_version(shield)
+        if not newest or newest["version"] != version:
+            continue
+        root = dest.parent / f"{dest.name}.git"
+        with tarfile.open(fileobj=io.BytesIO(_git("archive", commit, rel))) as tar:
+            tar.extractall(root, filter="data")
+        (root / rel).rename(dest)
+        shutil.rmtree(root)
+        return True
+    return False
+
+
+def packages(target: oci.Registry, ns: str, ops: list[Op], work: Path, build: BuildPackage,
+             log: Callable[[str], None], payloads: dict[str, str] | None = None) -> list[Path]:
+    """The package of each operation: kept, or built and kept.
+
+    A version main builds gets its add for all its lines and its
+    delete-everywhere at once, so that later releases find them. An older
+    build's package for another prefix set is built from the sources of the
+    commit that last built it; payloads (the tree's, by build) must then name
+    the payload it builds, which the builder checks against Build.payload."""
     repo = f"{ns}/{PACKAGES_REPOSITORY}"
     out = []
     for op in ops:
         path = work / f"{op.tag}.bee"
         data = get_package(target, repo, op.tag)
         if data is None:
-            if op.build.directory is None:
-                raise TreeError(f"{repo}:{op.tag} is missing and {op.build.name} is not a version main builds")
-            for kind, line in ([("add", l) for l in op.build.lines] + [("delete", l) for l in op.build.lines]
-                               + [("delete", EVERYWHERE)]):
-                tag = Op(kind, op.build, line).tag
+            b = op.build
+            if b.directory is not None:
+                kinds = [("add", b.prefixes), ("delete", EVERYWHERE), (op.op, op.prefixes)]
+            else:
+                payload = (payloads or {}).get(b.name)
+                src = work / "history" / b.name
+                src.parent.mkdir(parents=True, exist_ok=True)
+                if not payload or b.home is None or not (src.is_dir() or version_sources(b.home, b.version, src)):
+                    raise TreeError(f"{repo}:{op.tag} is missing and no commit builds {b.name}")
+                b = dataclasses.replace(b, directory=src, payload=payload)
+                kinds = [(op.op, op.prefixes)]
+            for kind, prefixes in dict.fromkeys(kinds):
+                tag = Op(kind, b, prefixes).tag
                 if get_package(target, repo, tag) is None:
                     log(f"build and keep {repo}:{tag}")
-                    put_package(target, repo, tag, build(op.build, kind, line, work).read_bytes())
+                    put_package(target, repo, tag, build(b, kind, prefixes, work).read_bytes())
             data = get_package(target, repo, op.tag)
         path.write_bytes(data)
         out.append(path)
@@ -447,7 +504,7 @@ def packages(target: oci.Registry, ns: str, ops: list[Op], work: Path,
 
 
 def publish(target: oci.Registry, ns: str, endpoint: str, tree: Tree, ops: list[Op],
-            bees: list[Path], run_append: RunAppend, expect: set[tuple[str, Line]],
+            bees: list[Path], run_append: RunAppend, expect: set[tuple[str, str]],
             log: Callable[[str], None]) -> str:
     """Append the operations in staging and copy the result to target; the new
     stable manifest digest."""
