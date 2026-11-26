@@ -215,6 +215,18 @@ def render_registry() -> str:
 # ------------------------------------------------------------------ README table
 
 
+def kernel_range(prefixes: list[str]) -> str:
+    """Kernel lines for display: "5.14, 6.1–7.2" (lines no distribution ships are not listed, so a
+    range shows the first and the last)."""
+    def key(p: str) -> tuple[int, ...]:
+        return tuple(int(x) for x in p.split(".")[:2])
+    lines = sorted({".".join(p.split(".")[:2]) for p in prefixes}, key=key)
+    old = [l for l in lines if key(l) < (6, 0)]
+    new = [l for l in lines if key(l) >= (6, 0)]
+    parts = old + ([new[0] if len(new) == 1 else f"{new[0]}–{new[-1]}"] if new else [])
+    return ", ".join(parts)
+
+
 def readme_table() -> str:
     rows = ["| Package | Bug | Hook | Version | Kernel lines | Status |", "|---|---|---|---|---|---|"]
     shields = sorted(load_shields(), key=lambda item: (published_version(item[1]) is None, item[1]["package"]))
@@ -226,7 +238,7 @@ def readme_table() -> str:
         hook = ", ".join(f"`{a}`" for a in main) + (f" + {helpers} helper{'s' if helpers > 1 else ''}" if helpers else "")
         newest = current_version(shield)
         version = newest["version"] if newest else "none"
-        lines = ", ".join(p for line in newest["lines"] for p in line["kernel_release_prefix"]) if newest else ""
+        lines = kernel_range([p for line in newest["lines"] for p in line["kernel_release_prefix"]]) if newest else ""
         status = "published" if published_version(shield) else "withdrawn"
         rows.append(f"| [`{shield['package']}`](shields/{directory.name}/) | {bug} | {hook} | {version} | {lines} | {status} |")
     return "\n".join(rows)
