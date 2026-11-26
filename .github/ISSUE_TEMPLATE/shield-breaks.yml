@@ -1,0 +1,15 @@
+name: A shield breaks something
+description: A published shield refuses legitimate use or does not load.
+title: "<package>@<version> breaks ..."
+labels: ["breakage"]
+body:
+  - type: markdown
+    attributes:
+      value: A bypass is a private security report (SECURITY.md). Meanwhile set `mode=audit` or exempt the UID.
+  - type: textarea
+    id: report
+    attributes:
+      label: Report
+      description: package@version, distro, `uname -r`, `cat /sys/kernel/security/lsm`, the shield's counters, what failed
+    validations:
+      required: true

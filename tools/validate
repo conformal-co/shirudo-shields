@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
+# Copyright (c) 2026 Conformal Shield Registry contributors
+"""Check every shield (or the ones named) and the generated files.
+
+    tools/validate [--strict] [shields/<dir> ...]
+
+Per shield: shield.toml against the schema; directory name, required files
+and README sections; package name; Beefile against shield.toml (name, tree
+id, selector = kernel lines, rodata generator runs); program sections;
+versions and kernel lines; affected and relevance data; SPDX headers;
+no-exploit heuristics and no binaries. For the repository: the catalog and
+the README table are what tools/export-registry writes.
+Exit 1 on an error (with --strict also on a warning).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import shieldlib as sl  # noqa: E402
+
+SPDX = "SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause"
+CODE_SUFFIXES = {".c", ".h", ".py", ".sh"}
+EXPLOIT_PATTERNS = [
+    (r"\bcommit_creds\b", "commit_creds (privilege escalation payload)"),
+    (r"\bprepare_kernel_cred\b", "prepare_kernel_cred (privilege escalation payload)"),
+    (r"\bmodprobe_path\b", "modprobe_path overwrite"),
+    (r"/proc/sys/kernel/core_pattern", "core_pattern overwrite"),
+    (r"\bshellcode\b", "shellcode"),
+    (r"\brop[_ ]?chain\b|\bpop[_ ]rdi\b|\bret2usr\b", "ROP chain"),
+    (r"\bkaslr[_ ]?(leak|bypass)\b", "KASLR leak/bypass"),
+    (r"\bheap[_ ]?spray\b|\bspray_(msg|pipe|sk)", "heap spray"),
+    (r"\bcross[-_]cache\b", "cross-cache attack"),
+    (r"\bmsg_msg\b|\bpipe_buffer\b", "kernel object used as an exploitation primitive"),
+    (r"\b(setuid|setresuid)\s*\(\s*0\s*[,)]", "setuid(0) payload"),
+    (r"execv?e?l?p?\s*\([^)]*/bin/(ba)?sh", "spawns a shell"),
+    (r"/etc/(passwd|shadow|sudoers)\b[^\n]*(O_WRONLY|O_RDWR|['\"](w|a|r\+)['\"])", "writes a credential file"),
+]
+BAD_NAMES = re.compile(r"(^|[/_.-])(exploit|pwn|poc|shellcode)([/_.-]|$)", re.I)
+# The version forms the installer compares (schema/distros.json compare).
+VERSION_FORMS = {
+    "dpkg": re.compile(r"^(\d+:)?\d[0-9A-Za-z.+~]*-[0-9A-Za-z.+~]+$"),
+    "rpm": re.compile(r"^\d[0-9A-Za-z._+~^]*-[0-9A-Za-z._+~^]+$"),
+    "pacman": re.compile(r"^(\d+:)?\d[0-9A-Za-z._+]*-\d+(\.\d+)?$"),
+    "os-version": re.compile(r"^\d+(\.\d+)*$"),
+}
+
+
+class Report:
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
+
+    def error(self, where: str, msg: str) -> None:
+        self.errors.append(f"{where}: {msg}")
+
+    def warn(self, where: str, msg: str) -> None:
+        self.warnings.append(f"{where}: {msg}")
+
+
+def rel(path: Path) -> str:
+    try:
+        return path.relative_to(sl.ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def git_files(directory: Path) -> list[Path]:
+    """Files under directory, tracked or untracked, minus ignored ones."""
+    try:
+        out = subprocess.run(["git", "-C", str(sl.ROOT), "ls-files", "-co", "--exclude-standard", "--", rel(directory)],
+                             check=True, capture_output=True, text=True).stdout
+        return sorted(p for p in (sl.ROOT / line for line in out.splitlines() if line) if p.is_file())
+    except (OSError, subprocess.CalledProcessError):
+        return sorted(p for p in directory.rglob("*") if p.is_file())
+
+
+def check_schema(where: str, shield: dict, report: Report) -> bool:
+    try:
+        import jsonschema
+    except ImportError:
+        report.error(where, "python module jsonschema is missing (pip install -r tools/requirements.txt)")
+        return False
+    schema = json.loads(sl.SCHEMA.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
+    errors = sorted(validator.iter_errors(shield), key=lambda e: list(e.absolute_path))
+    for err in errors:
+        report.error(where, f"schema: {'/'.join(str(p) for p in err.absolute_path) or '(root)'}: {err.message}")
+    return not errors
+
+
+def check_layout(directory: Path, shield: dict, report: Report) -> None:
+    where = rel(directory)
+    match = sl.SHIELD_DIR.match(directory.name)
+    if not match:
+        report.error(where, "directory name must be CVE-YYYY-NNNN-<slug> (lowercase slug)")
+    elif match.group(1) not in shield["cve_ids"]:
+        report.error(where, f"{match.group(1)} from the directory name is not in cve_ids")
+    for name in ["Beefile", "README.md"] + sorted({h["program"] for h in shield["hooks"]}):
+        if not (directory / name).is_file():
+            report.error(where, f"missing {name}")
+    readme = directory / "README.md"
+    if readme.is_file():
+        headings = [h for h in re.findall(r"^## +(.+?)\s*$", readme.read_text(encoding="utf-8"), re.M)
+                    if h in sl.README_SECTIONS]
+        if headings != sl.README_SECTIONS:
+            report.error(where, f"README.md needs the sections {', '.join(sl.README_SECTIONS)}, in this order")
+    names = {cve.lower() for cve in shield["cve_ids"]}
+    names |= {re.sub(r"[^a-z0-9]+", "-", alias.lower()).strip("-") for alias in shield.get("aliases", [])}
+    if not any(shield["package"] == n or shield["package"].startswith(n + "-") for n in names if n):
+        report.error(where, f"package {shield['package']!r} must be the bug's canonical name (a slugged alias) "
+                     "or its CVE id in lower case, optionally with a -suffix")
+    for path in git_files(directory):
+        if path.suffix in CODE_SUFFIXES | {".md", ".toml", ".list", ""} and b"TODO" in path.read_bytes():
+            report.error(where, f"{path.relative_to(directory)} has TODOs left")
+
+
+def check_beefile(directory: Path, shield: dict, report: Report) -> None:
+    where = rel(directory)
+    try:
+        bee = sl.load_toml(directory / "Beefile")
+    except FileNotFoundError:
+        return
+    except Exception as exc:  # noqa: BLE001
+        report.error(where, f"Beefile does not parse: {exc}")
+        return
+    package = bee.get("package", {})
+    for key in ("name", "description", "license", "authors"):
+        if not package.get(key):
+            report.error(where, f"Beefile [package] has no {key}")
+    if package.get("name") != shield["package"]:
+        report.error(where, f"Beefile [package].name {package.get('name')!r} != package {shield['package']!r}")
+    if package.get("license") != "GPL-2.0 OR BSD-2-Clause":
+        report.error(where, "Beefile license must be 'GPL-2.0 OR BSD-2-Clause'")
+    for item in bee.get("files", []):
+        if not (directory / item.get("source", "")).is_file():
+            report.error(where, f"Beefile [[files]] source {item.get('source')!r} does not exist")
+    upatches = bee.get("upatches", [])
+    if len(upatches) != 1:
+        report.error(where, "Beefile needs exactly one [[upatches]]")
+    sources = [up.get("source", "") for up in upatches]
+    for up in upatches:
+        src = up.get("source", "")
+        if not src.endswith(".bpf.c") or not (directory / src).is_file():
+            report.error(where, f"Beefile upatch source {src!r} is not an existing .bpf.c file")
+        if up.get("tree", {}).get("id") != src.removesuffix(".bpf.c"):
+            report.error(where, f"Beefile [upatches.tree] id must be the upatch name {src.removesuffix('.bpf.c')!r}")
+        for rodata in up.get("rodata", []):
+            check_generator(directory, rodata, report)
+        selector = up.get("tree", {}).get("selector", {})
+        check_selector(where, shield, selector.get("kernel_release_prefix", []), report)
+        if any(h["needs_bpf_lsm"] for h in shield["hooks"]) and "CONFIG_BPF_LSM" not in selector.get("kconfig", {}):
+            report.warn(where, "a hook needs the BPF LSM but the Beefile selector has no CONFIG_BPF_LSM")
+    for hook in shield["hooks"]:
+        if hook["program"] not in sources:
+            report.error(where, f"hook program {hook['program']!r} is not the Beefile upatch source")
+
+
+def check_generator(directory: Path, rodata: dict, report: Report) -> None:
+    where = rel(directory)
+    cfg_in, gen = directory / rodata.get("input", ""), directory / (rodata.get("generator") or [""])[-1]
+    if not cfg_in.is_file() or not gen.is_file():
+        report.error(where, "Beefile [[upatches.rodata]] input or generator does not exist")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "rodata.bin"
+        run = subprocess.run([sys.executable, "-I", str(gen), "--input", str(cfg_in), "--symbol",
+                              rodata.get("symbol", ""), "--output", str(out)],
+                             capture_output=True, text=True, cwd=tmp, timeout=60)
+        if run.returncode or not out.is_file() or not out.stat().st_size:
+            report.error(where, f"rodata generator failed on {cfg_in.name}: {run.stderr.strip()[-300:]}")
+
+
+def check_selector(where: str, shield: dict, prefixes: list[str], report: Report) -> None:
+    """The Beefile selector is exactly the newest version's kernel lines: the
+    package is signed with it, and hosts load it only where it matches."""
+    for prefix in prefixes:
+        if prefix.endswith((".", "-")):
+            report.error(where, f"selector prefix {prefix!r}: a prefix matches only at a '.', '-' or the end "
+                         "of uname -r, so a trailing one never matches")
+    if not shield["versions"]:
+        return
+    newest = max(shield["versions"], key=lambda v: tuple(int(x) for x in v["version"].split(".")))
+    lines = {p for line in newest["lines"] for p in line["kernel_release_prefix"]}
+    if lines != set(prefixes):
+        report.error(where, f"Beefile selector {sorted(prefixes)} != the kernel lines of {newest['version']} "
+                     f"{sorted(lines)}")
+
+
+def check_programs(directory: Path, shield: dict, report: Report) -> None:
+    where = rel(directory)
+    attaches = {h["attach"] for h in shield["hooks"]}
+    for hook in shield["hooks"]:
+        prog = directory / hook["program"]
+        if prog.is_file() and f'SEC("{hook["attach"]}")' not in prog.read_text(encoding="utf-8"):
+            report.error(where, f'{hook["program"]} has no SEC("{hook["attach"]}")')
+    for prog in sorted(directory.glob("*.bpf.c")):
+        for section in re.findall(r'\bSEC\("([^"]+)"\)', prog.read_text(encoding="utf-8")):
+            if section.startswith(".") or section == "license":
+                continue
+            if not sl.attach_supported(section):
+                report.error(where, f'{prog.name}: SEC("{section}") is not a kind the stock-kernel port attaches')
+            elif section not in attaches:
+                report.error(where, f'{prog.name}: SEC("{section}") is not in shield.toml [[hooks]]')
+
+
+def check_data(directory: Path, shield: dict, report: Report) -> None:
+    where = rel(directory)
+    distros = sl.load_distros()
+    known = distros["distros"]
+    seen = set()
+    for row in shield["affected"]["fixes"]:
+        label = f"affected: {row['distro']} {row['cve']}"
+        if row["distro"] not in known:
+            report.error(where, f"{label}: unknown distro (schema/distros.json)")
+            continue
+        if row["cve"] not in shield["cve_ids"]:
+            report.error(where, f"{label}: the CVE is not in cve_ids")
+        if (row["distro"], row["cve"]) in seen:
+            report.error(where, f"{label} is listed twice")
+        seen.add((row["distro"], row["cve"]))
+        form = VERSION_FORMS.get(known[row["distro"]].get("compare") or "")
+        for fixed in row.get("fixed") or []:
+            if not (form and form.match(fixed)):
+                report.error(where, f"{label}: fixed {fixed!r} is not a {known[row['distro']].get('compare')} version")
+    versions = [v["version"] for v in shield["versions"]]
+    if len(set(versions)) != len(versions):
+        report.error(where, "a version is listed twice")
+    for version in shield["versions"]:
+        label = f"version {version['version']}"
+        major_minor = ".".join(version["version"].split(".")[:2])
+        names = [line["name"] for line in version["lines"]]
+        if len(set(names)) != len(names):
+            report.error(where, f"{label}: a kernel line is listed twice")
+        for line in version["lines"]:
+            if any(re.match(rf"^{re.escape(major_minor)}(\.|-|$)", p) for p in line["kernel_release_prefix"]):
+                report.error(where, f"{label} looks like its kernel line {line['name']!r}: "
+                             "a version is the shield's revision (1.0.0 first)")
+            for distro in line.get("distros", []):
+                if distro not in known:
+                    report.error(where, f"{label}: line {line['name']!r}: unknown distro {distro!r}")
+    check_relevance(where, shield, bool(distros.get("upstream_kernels")), report)
+
+
+def check_relevance(where: str, shield: dict, has_upstream: bool, report: Report) -> None:
+    rel_ = shield.get("relevance")
+    if not rel_:
+        return
+    fixed = rel_.get("upstream_fixed") or {}
+    introduced, mainline = rel_.get("introduced"), fixed.get("mainline")
+    key = sl.version_key
+    if mainline is not None and len(mainline.split(".")) != 2:
+        report.error(where, f"relevance: upstream_fixed.mainline {mainline!r} must be major.minor")
+    for branch, first in fixed.items():
+        if branch == "mainline":
+            continue
+        label = f"relevance: upstream_fixed {branch!r} = {first!r}"
+        if ".".join(first.split(".")[:2]) != branch:
+            report.error(where, f"{label}: the release is not of that branch")
+        if introduced and key(branch) < key(introduced):
+            report.error(where, f"{label}: the branch is older than introduced {introduced}")
+        if mainline and key(branch) >= key(mainline):
+            report.error(where, f"{label}: the branch is not older than mainline {mainline}")
+    if introduced and mainline and key(mainline) < key(introduced):
+        report.error(where, f"relevance: mainline {mainline} is older than introduced {introduced}")
+    markers = rel_.get("fix_markers") or []
+    for marker in markers:
+        if re.fullmatch(r"CVE-\d{4}-\d{4,}", marker) and marker not in shield["cve_ids"]:
+            report.error(where, f"relevance: fix marker {marker} is not in cve_ids")
+    subjects = {fix["subject"] for fix in shield["fixes"]}
+    if markers and not any(m in subjects or m in shield["cve_ids"] for m in markers):
+        report.warn(where, "relevance: no fix marker is a CVE id or an upstream fix subject")
+    if (fixed or introduced) and not has_upstream:
+        report.error(where, "relevance: upstream versions given, but schema/distros.json lists no upstream_kernels")
+
+
+def check_files(directory: Path, report: Report) -> None:
+    for path in git_files(directory):
+        name, inside = rel(path), path.relative_to(directory).as_posix()
+        data = path.read_bytes()
+        if b"\0" in data:
+            report.error(name, "binary file: shields hold source and metadata only")
+            continue
+        if BAD_NAMES.search(inside):
+            report.error(name, "file name suggests exploit code")
+        if path.suffix not in CODE_SUFFIXES:
+            continue
+        text = data.decode("utf-8", errors="replace")
+        if SPDX not in "\n".join(text.splitlines()[:5]):
+            report.error(name, f"missing '{SPDX}' in the first lines")
+        for pattern, what in EXPLOIT_PATTERNS:
+            hit = re.search(pattern, text, re.I)
+            if hit:
+                report.error(f"{name}:{text.count(chr(10), 0, hit.start()) + 1}", f"no-exploit heuristic: {what}")
+
+
+def check_generated(report: Report) -> None:
+    if not sl.REGISTRY.is_file() or sl.REGISTRY.read_text(encoding="utf-8") != sl.render_registry():
+        report.error(rel(sl.REGISTRY), "out of date: run tools/export-registry --write")
+    text = sl.README.read_text(encoding="utf-8")
+    if sl.TABLE_BEGIN not in text or sl.TABLE_END not in text:
+        report.error("README.md", "shield table markers are missing")
+    elif sl.splice_readme(text, sl.readme_table()) != text:
+        report.error("README.md", "shield table is out of date: run tools/export-registry --write")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("shields", nargs="*", type=Path, help="shield directories (default: all)")
+    parser.add_argument("--strict", action="store_true", help="fail on warnings too")
+    args = parser.parse_args(argv)
+    report = Report()
+    dirs = [p.resolve() for p in args.shields] or sl.shield_dirs()
+    for directory in dirs:
+        where = rel(directory)
+        try:
+            shield = sl.load_toml(directory / "shield.toml")
+        except Exception as exc:  # noqa: BLE001
+            report.error(where, f"shield.toml: {exc}")
+            continue
+        if not check_schema(where, shield, report):
+            continue
+        check_layout(directory, shield, report)
+        check_beefile(directory, shield, report)
+        check_programs(directory, shield, report)
+        check_data(directory, shield, report)
+        check_files(directory, report)
+    if not args.shields:
+        check_generated(report)
+    for line in report.warnings:
+        print(f"warning: {line}")
+    for line in report.errors:
+        print(f"error: {line}")
+    print(f"validate: {len(dirs)} shield(s), {len(report.errors)} error(s), {len(report.warnings)} warning(s)")
+    return 1 if report.errors or (args.strict and report.warnings) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

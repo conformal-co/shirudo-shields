@@ -1,0 +1,10 @@
+SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
+
+Copyright (c) 2026 Conformal Shield Registry contributors and the authors
+named in each file.
+
+Unless a file says otherwise, the contents of this repository are
+dual-licensed under either the GNU General Public License, version 2 only
+(LICENSES/GPL-2.0.txt), or the BSD 2-Clause License
+(LICENSES/BSD-2-Clause.txt). BPF programs declare "Dual BSD/GPL" to the
+kernel.

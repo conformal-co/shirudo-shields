@@ -1,0 +1,10 @@
+# Pinned build inputs for tools/build and tools/publish.
+image = "shirudo-build:a42115fe337f798d"
+shirudo_repository = "https://github.com/shirudo-dev/shirudo"
+shirudo_commit = "779bb01b9f5a944ff9a3e9a18d15ebe4da504fbe"
+# vendor/linux/vmlinux.h of upstream's 7.4 CI kernel (CO-RE: relocations are
+# resolved against each target's BTF at load). Not tracked by upstream git.
+vmlinux_h_sha256 = "c16159e7550e57f8412a0b34bee972e7d5b0f9cedd45cda61f74e45e93f1537e"
+libbpf_commit = "cd5bc55288d4fd999595c8f2af6a5408cbe92a52"
+# Flags of `shirudo build` (tools/shirudo-build/compile.c at shirudo_commit).
+cflags = ["-target", "bpf", "-mcpu=v4", "-fno-jump-tables", "-O2", "-g", "-Wall", "-Wextra", "-Wshadow", "-Wtype-limits", "-Wno-missing-declarations", "-Wno-unused-parameter"]

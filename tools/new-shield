@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
+# Copyright (c) 2026 Conformal Shield Registry contributors
+"""Scaffold shields/<CVE>-<slug>/ for an lsm/* hook; replace every TODO.
+
+    tools/new-shield CVE-2026-12345 my-slug --hook lsm/socket_create [--package NAME]
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import shieldlib as sl  # noqa: E402
+
+TEMPLATES = Path(__file__).resolve().parent / "templates"
+FILES = {"shield.toml": "shield.toml.in", "Beefile": "Beefile.in", "README.md": "README.md.in",
+         "config.list": "config.list.in", "gen_config_rodata.py": "gen_config_rodata.py.in"}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("cve")
+    parser.add_argument("slug")
+    parser.add_argument("--hook", required=True, help="SEC() name, e.g. lsm/socket_create")
+    parser.add_argument("--package", help="package name (default: the CVE id in lower case)")
+    args = parser.parse_args(argv)
+    if not re.fullmatch(r"CVE-\d{4}-\d{4,}", args.cve):
+        parser.error("CVE must look like CVE-2026-12345")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", args.slug):
+        parser.error("slug: lowercase letters, digits and dashes")
+    if not re.fullmatch(r"lsm/[a-z0-9_]+", args.hook):
+        parser.error("only lsm/<hook> is scaffolded; copy an existing shield for other program types")
+    directory = sl.SHIELDS / f"{args.cve}-{args.slug}"
+    if directory.exists():
+        parser.error(f"{directory} exists")
+    ident = args.slug.replace("-", "_")
+    subs = {
+        "@CVE@": args.cve, "@SLUG@": args.slug, "@PACKAGE@": args.package or args.cve.lower(),
+        "@SYMBOL@": f"{ident}_config"[:64], "@MAP@": f"{ident}_stats"[:15], "@ATTACH@": args.hook,
+        "@FUNC@": f"{ident}_{args.hook.split('/')[1]}"[:60], "@DATE@": datetime.date.today().isoformat(),
+        "@YEAR@": str(datetime.date.today().year),
+    }
+
+    def render(template: str) -> str:
+        text = (TEMPLATES / template).read_text(encoding="utf-8")
+        for key, value in subs.items():
+            text = text.replace(key, value)
+        return text
+
+    directory.mkdir(parents=True)
+    for name, template in FILES.items():
+        (directory / name).write_text(render(template), encoding="utf-8")
+    (directory / f"{args.slug}.bpf.c").write_text(render("lsm.bpf.c.in"), encoding="utf-8")
+    (directory / "gen_config_rodata.py").chmod(0o755)
+    print(f"created {directory.relative_to(sl.ROOT)}; replace every TODO, then run tools/validate")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

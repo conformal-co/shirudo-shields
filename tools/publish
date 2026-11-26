@@ -1,0 +1,598 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
+# Copyright (c) 2026 Conformal Shield Registry contributors
+"""Make the signed bpm index and upatch tree of a registry namespace hold what main publishes.
+
+    tools/publish --registry HOST --namespace NS --dry-run
+    tools/publish --registry HOST --namespace NS --cert FILE --signer CMD --shirudo-src DIR
+
+Published: each shield's newest version, unless it or the shield is
+withdrawn. <NS>/bpm-index:stable then lists exactly those packages at
+<NS>/<package>; every other entry is removed.
+
+  1. tools/validate must pass.
+  2. Diff the live index (+ add, - remove, = keep). A kept version is
+     immutable: its Beefile, README.md and files must equal this tree's.
+     --dry-run stops here. Nothing to change: stop.
+  3. tools/build, then `shirudo-build bpm build` per package (--network
+     none), signed through --signer. Kept versions must rebuild to the
+     same upatches, files and signer; their live .bee is pushed again.
+  4. Push to a loopback staging registry (the first push --new-index, so
+     shirudo-build writes and signs the index), check it, check the live
+     index has not moved, copy everything over, the index tag last.
+  5. Update the upatch tree hosts follow with `bpm tree sync`
+     (tools/treepub.py), in one atomic move of <NS>/upatch-tree:stable.
+
+Registry credentials: PUBLISH_REGISTRY_USERNAME, PUBLISH_REGISTRY_PASSWORD
+(used here only, never passed to a container). There is no key file:
+--signer is a SHIRUDO_SIGNER command (e.g. a KMS signer) that reads the
+bytes to sign on stdin and writes the raw ML-DSA-87 signature. It runs on
+the host; the containers reach it through a Unix socket relay.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tarfile
+import tempfile
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ocilib as oci  # noqa: E402
+import shieldlib as sl  # noqa: E402
+import treepub as tp  # noqa: E402
+
+INDEX_REPOSITORY = "bpm-index"
+INDEX_TAG = "stable"
+INDEX_DOC_MEDIA = "application/vnd.shirudo.bpm.index.v1+json"
+INDEX_SIG_MEDIA = "application/vnd.shirudo.bpm.index.signature.v1"
+PACKAGE_MEDIA = "application/vnd.shirudo.bpm.package.v1+gzip"
+# registry:3.0.0, pinned; only ever bound to loopback.
+STAGING_IMAGE = "registry@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e"
+RESERVED = {"build-environment.json", "cert.der"}
+
+
+def log(msg: str) -> None:
+    print(f"publish: {msg}", file=sys.stderr, flush=True)
+
+
+class Refused(RuntimeError):
+    pass
+
+
+@dataclass
+class Want:
+    name: str
+    version: str
+    directory: Path
+    shield: dict[str, Any]
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.name, self.version)
+
+
+# ------------------------------------------------------------ published set
+
+
+def published_set() -> list[Want]:
+    """Per shield on main, its newest version unless that or the shield is withdrawn."""
+    out = []
+    for directory, shield in sl.load_shields():
+        version = sl.published_version(shield)
+        if version is not None:
+            out.append(Want(shield["package"], version["version"], directory, shield))
+    return sorted(out, key=lambda w: w.key)
+
+
+# ------------------------------------------------------------ live index
+
+
+def read_index(reg: oci.Registry, ns: str) -> tuple[str | None, bytes | None, list[dict[str, Any]]]:
+    """(manifest digest, document bytes, entries); (None, None, []) when there is none."""
+    repo = f"{ns}/{INDEX_REPOSITORY}"
+    try:
+        body, digest, _ = reg.get_manifest(repo, INDEX_TAG)
+    except oci.NotFound:
+        return None, None, []
+    layers = json.loads(body).get("layers") or []
+    docs = [l for l in layers if l.get("mediaType") == INDEX_DOC_MEDIA]
+    sigs = [l for l in layers if l.get("mediaType") == INDEX_SIG_MEDIA]
+    if len(docs) != 1 or len(sigs) != 1:
+        raise Refused(f"{repo}:{INDEX_TAG} is not a bpm index (one document and one signature layer)")
+    doc = reg.get_blob(repo, docs[0]["digest"], docs[0].get("size"))
+    parsed = json.loads(doc)
+    if parsed.get("schema") != 1 or not isinstance(parsed.get("packages"), list):
+        raise Refused(f"{repo}:{INDEX_TAG}: unsupported index document")
+    return digest, doc, parsed["packages"]
+
+
+def index_digest(reg: oci.Registry, ns: str) -> str | None:
+    try:
+        return reg.get_manifest(f"{ns}/{INDEX_REPOSITORY}", INDEX_TAG)[1]
+    except oci.NotFound:
+        return None
+
+
+# ------------------------------------------------------------ package content
+
+
+def bee_members(data: bytes) -> dict[str, bytes]:
+    out: dict[str, bytes] = {}
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            name = member.name.split("/", 1)[1] if "/" in member.name else member.name
+            out[name] = tar.extractfile(member).read()
+    return out
+
+
+def bee_content(data: bytes) -> dict[str, Any]:
+    """What a package carries apart from its signatures and build time."""
+    members = bee_members(data)
+    env = json.loads(members.get("build-environment.json", b"{}"))
+    files = {n: hashlib.sha256(b).hexdigest() for n, b in members.items()
+             if n not in RESERVED and not n.startswith("upatches/")}
+    return {
+        "name": (env.get("package") or {}).get("name"),
+        "version": (env.get("package") or {}).get("version"),
+        "files": files,
+        "payloads": sorted((u.get("upatch_name"), u.get("payload_sha256")) for u in env.get("upatches") or []),
+        "signer": (env.get("shirudo") or {}).get("spki_sha256_fingerprint"),
+    }
+
+
+def tree_files_differ(content: dict[str, Any], directory: Path) -> list[str]:
+    """Files of a published package that differ from this tree (no build needed)."""
+    bad = []
+    for name, digest in sorted(content["files"].items()):
+        path = directory / name
+        if not path.is_file() or sl.sha256_file(path) != digest:
+            bad.append(name)
+    return bad
+
+
+# ------------------------------------------------------------ diff
+
+
+def version_key(version: str) -> tuple:
+    try:
+        return (1, sl.version_key(version.split("-")[0].split("+")[0]), version)
+    except ValueError:
+        return (0, (), version)
+
+
+def diff(wants: list[Want], live: list[dict[str, Any]], ns: str) -> tuple[list[Want], list[dict[str, Any]], list[Want]]:
+    live_by_key = {(e.get("name"), e.get("version")): e for e in live}
+    add, keep = [], []
+    for want in wants:
+        entry = live_by_key.get(want.key)
+        if entry and entry.get("repository") == f"{ns}/{want.name}":
+            keep.append(want)
+        else:
+            add.append(want)
+    wanted = {w.key for w in keep}
+    remove = [e for e in live if (e.get("name"), e.get("version")) not in wanted]
+    return add, remove, keep
+
+
+def print_diff(add: list[Want], remove: list[dict[str, Any]], keep: list[Want]) -> None:
+    rows = [(w.name, w.version, "+") for w in add]
+    rows += [(e.get("name"), e.get("version"), "-") for e in remove]
+    rows += [(w.name, w.version, "=") for w in keep]
+    for name, version, mark in sorted(rows, key=lambda r: (str(r[0]), version_key(str(r[1])), r[2])):
+        print(f"{mark} {name}@{version}")
+    print(f"# {len(add)} to add, {len(remove)} to remove, {len(keep)} unchanged")
+
+
+# ------------------------------------------------------------ build
+
+
+def docker(*args: str, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
+    return subprocess.run(["docker", *args], check=check, text=True,
+                          stdout=subprocess.PIPE if capture else None)
+
+
+def tool_paths(src: Path) -> tuple[Path, Path, Path]:
+    tool = src / "tools" / "shirudo-build" / "shirudo-build"
+    vmlinux = src / "vendor" / "linux" / "vmlinux.h"
+    libbpf = src / "vendor" / "libbpf"
+    for path in (tool, vmlinux, libbpf / "bpf" / "bpf_helpers.h"):
+        if not path.exists():
+            raise Refused(f"{path} missing (--shirudo-src needs a built tools/shirudo-build/shirudo-build, vendor/linux/vmlinux.h, vendor/libbpf)")
+    return tool, vmlinux, libbpf
+
+
+# ------------------------------------------------------------ signer relay
+
+SIGNER_CLIENT = """import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.connect("/signer/sign.sock")
+s.sendall(sys.stdin.buffer.read())
+s.shutdown(socket.SHUT_WR)
+sig = b"".join(iter(lambda: s.recv(65536), b""))
+sys.stdout.buffer.write(sig)
+sys.exit(0 if sig else 1)
+"""
+SIGNER_MAX_MESSAGE = 64 * 1024
+
+
+class SignerRelay:
+    """A Unix socket the containers' SHIRUDO_SIGNER talks to; runs --signer on the host.
+
+    One connection per signature: the message, then the signature back, or
+    nothing when --signer fails. The containers see neither the command nor
+    its credentials."""
+
+    def __init__(self, command: str) -> None:
+        self.command = command
+        self.dir = Path(tempfile.mkdtemp(prefix="shirudo-signer."))
+        self.count = 0
+        self.sock = socket.socket(socket.AF_UNIX)
+
+    def __enter__(self) -> "SignerRelay":
+        (self.dir / "client.py").write_text(SIGNER_CLIENT, encoding="utf-8")
+        self.sock.bind(str(self.dir / "sign.sock"))
+        self.sock.listen(4)
+        threading.Thread(target=self._serve, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.sock.close()
+        shutil.rmtree(self.dir, ignore_errors=True)
+        log(f"signer: {self.count} signatures")
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            with conn:
+                self._sign(conn)
+
+    def _sign(self, conn: socket.socket) -> None:
+        message = b""
+        while len(message) <= SIGNER_MAX_MESSAGE:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            message += chunk
+        if not message or len(message) > SIGNER_MAX_MESSAGE:
+            log("signer: refused a request of the wrong size")
+            return
+        run = subprocess.run(["/bin/sh", "-c", self.command], input=message, stdout=subprocess.PIPE)
+        if run.returncode or not run.stdout:
+            log(f"signer: --signer failed (exit status {run.returncode})")
+            return
+        self.count += 1
+        conn.sendall(run.stdout)
+
+
+def container_base(src: Path, keys: Path, image: str, network: str, relay: SignerRelay) -> list[str]:
+    tool, vmlinux, libbpf = tool_paths(src)
+    return [
+        "run", "--rm", "--network", network, "--read-only", "--tmpfs", "/tmp",
+        "--ulimit", "memlock=-1:-1", "-u", f"{os.getuid()}:{os.getgid()}",
+        "-e", "HOME=/tmp", "-e", "TMPDIR=/tmp",
+        "-e", "SHIRUDO_SIGNER=python3 /signer/client.py",
+        "-v", f"{tool}:/opt/shirudo-build:ro",
+        "-v", f"{vmlinux}:/opt/vmlinux.h:ro",
+        "-v", f"{libbpf}:/usr/local/share/shirudo/bpf/include:ro",
+        "-v", f"{keys}:/keys:ro",
+        "-v", f"{relay.dir}:/signer:ro",
+    ]
+
+
+def build_packages(wants: list[Want], args: argparse.Namespace, out: Path,
+                   relay: SignerRelay) -> dict[tuple[str, str], Path]:
+    log("tools/build: reproducible CO-RE objects")
+    run = subprocess.run([str(sl.ROOT / "tools" / "build"), "--shirudo-src", str(args.shirudo_src),
+                          "--image", args.image, "--out", str(out / "objects"),
+                          *[str(w.directory) for w in wants]])
+    if run.returncode:
+        raise Refused("tools/build failed")
+    bees = out / "bee"
+    bees.mkdir(parents=True, exist_ok=True)
+    built = {}
+    for want in wants:
+        log(f"bpm build {want.name}@{want.version}")
+        cmd = container_base(args.shirudo_src, args.keys_dir, args.image, "none", relay) + [
+            "-v", f"{want.directory}:/src:ro", "-v", f"{bees}:/out", "-w", "/out",
+            args.image, "/opt/shirudo-build", "bpm", "build", "/src",
+            "--version", want.version, "--keys-dir", "/keys", "--vmlinux", "/opt/vmlinux.h",
+        ]
+        if docker(*cmd, check=False).returncode:
+            raise Refused(f"bpm build {want.name}@{want.version} failed")
+        path = bees / f"{want.name}-{want.version}.bee"
+        if not path.is_file():
+            raise Refused(f"bpm build wrote no {path.name}")
+        built[want.key] = path
+    return built
+
+
+def tree_package_builder(args: argparse.Namespace, relay: SignerRelay):
+    """Builds one tree package of the version main builds (tools/treepub.py)."""
+    def build(b: tp.Build, kind: str, line: tp.Line, work: Path) -> Path:
+        sel = tp.add_selector(b.shield, line) if kind == "add" else tp.delete_selector(b.shield, line)
+        tag = tp.Op(kind, b, line).tag
+        src = work / "tree-src" / tag
+        tp.tree_sources(b.directory, src, b.name, sel)
+        dest = work / "tree-bee" / tag
+        dest.mkdir(parents=True)
+        log(f"bpm build {b.package}@{b.version} as {tag}")
+        cmd = container_base(args.shirudo_src, args.keys_dir, args.image, "none", relay) + [
+            "-v", f"{src}:/src:ro", "-v", f"{dest}:/out", "-w", "/out",
+            args.image, "/opt/shirudo-build", "bpm", "build", "/src",
+            "--version", b.version, "--keys-dir", "/keys", "--vmlinux", "/opt/vmlinux.h",
+        ]
+        if docker(*cmd, check=False).returncode:
+            raise Refused(f"bpm build {tag} failed")
+        path = dest / f"{b.package}-{b.version}.bee"
+        names = [n for n, _ in bee_content(path.read_bytes())["payloads"]]
+        if names != [b.name]:
+            raise Refused(f"{tag}: the package holds {names}, not the upatch {b.name}")
+        return path
+    return build
+
+
+def tree_append(args: argparse.Namespace, relay: SignerRelay, endpoint: str):
+    def run_append(staging: tp.TreeStaging, appends: list[tuple[Path, str]]) -> None:
+        for path, op in appends:
+            log(f"bpm tree append {path.name} --op {op}")
+            cmd = container_base(args.shirudo_src, args.keys_dir, args.image,
+                                 f"container:{staging.name}", relay) + staging.container_args()
+            cmd += ["-v", f"{path}:/tree/{path.name}:ro", args.image, "/opt/shirudo-build", "bpm", "tree",
+                    "append", f"/tree/{path.name}", endpoint, "--keys-dir", "/keys",
+                    "--tree-id", tp.TREE_ID, "--reference", tp.TREE_TAG, "--op", op]
+            if docker(*cmd, check=False).returncode:
+                raise Refused(f"bpm tree append {path.name} --op {op} failed")
+    return run_append
+
+
+def check_fresh(want: Want, content: dict[str, Any]) -> None:
+    if (content["name"], content["version"]) != want.key:
+        raise Refused(f"{want.name}@{want.version}: the build names {content['name']}@{content['version']}")
+
+
+# ------------------------------------------------------------ staging
+
+
+class Staging:
+    def __init__(self) -> None:
+        self.name = f"shirudo-publish-staging-{os.getpid()}"
+        self.port = 0
+
+    def __enter__(self) -> "Staging":
+        docker("run", "-d", "--rm", "--name", self.name, "-p", "127.0.0.1::5000", STAGING_IMAGE, capture=True)
+        mapped = docker("port", self.name, "5000/tcp", capture=True).stdout.split()[0]
+        self.port = int(mapped.rsplit(":", 1)[1])
+        reg = self.registry()
+        for _ in range(60):
+            try:
+                reg._request("GET", f"{reg.base}/v2/", "")
+                return self
+            except oci.OciError:
+                time.sleep(0.5)
+        raise Refused("staging registry did not start")
+
+    def __exit__(self, *exc: object) -> None:
+        docker("rm", "-f", self.name, check=False, capture=True)
+
+    def registry(self) -> oci.Registry:
+        return oci.Registry(f"127.0.0.1:{self.port}", plain_http=True)
+
+
+def push_to_staging(staging: Staging, ns: str, bees: list[tuple[Want, Path]], args: argparse.Namespace,
+                    relay: SignerRelay) -> None:
+    lines = ["set -eu", "export BPM_OCI_SCHEME=http"]
+    for i, (want, path) in enumerate(bees):
+        flag = " --new-index" if i == 0 else ""
+        lines.append(f"/opt/shirudo-build bpm push /bee/{path.name} oci://127.0.0.1:5000/{ns}/{want.name} --keys-dir /keys{flag}")
+    with tempfile.TemporaryDirectory() as tmp:
+        bee_dir = Path(tmp) / "bee"
+        bee_dir.mkdir()
+        for _, path in bees:
+            shutil.copy2(path, bee_dir / path.name)
+        (Path(tmp) / "push.sh").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        cmd = container_base(args.shirudo_src, args.keys_dir, args.image, f"container:{staging.name}", relay) + [
+            "-v", f"{bee_dir}:/bee:ro", "-v", f"{tmp}/push.sh:/push.sh:ro", args.image, "sh", "/push.sh",
+        ]
+        if docker(*cmd, check=False).returncode:
+            raise Refused("bpm push to the staging registry failed")
+
+
+# ------------------------------------------------------------ promote
+
+
+def promote(staging: oci.Registry, target: oci.Registry, ns: str,
+            entries: list[dict[str, Any]], skip: set[tuple[str, str]]) -> None:
+    for entry in entries:
+        key = (entry["name"], entry["version"])
+        repo = entry["repository"]
+        if key in skip:
+            continue
+        log(f"copy {repo}@{entry['manifest_digest']} (tag {entry['version']})")
+        oci.copy_manifest(staging, target, repo, entry["manifest_digest"], [entry["version"]])
+        for ref in staging.referrers(repo, entry["manifest_digest"]):
+            try:
+                oci.copy_manifest(staging, target, repo, ref["digest"], [])
+            except oci.OciError as err:  # the certificate referrer is not read by shirudo
+                log(f"warning: referrer {ref['digest']} of {repo} not copied: {err}")
+    repo = f"{ns}/{INDEX_REPOSITORY}"
+    body, digest, media = staging.get_manifest(repo, INDEX_TAG)
+    for desc in oci.manifest_blobs(body):
+        target.put_blob(repo, staging.get_blob(repo, desc["digest"], desc.get("size")), desc["digest"])
+    target.put_manifest(repo, digest, body, media)
+    target.put_manifest(repo, INDEX_TAG, body, media)
+    log(f"{repo}:{INDEX_TAG} -> {digest}")
+
+
+# ------------------------------------------------------------ main
+
+
+def run(args: argparse.Namespace) -> int:
+    ns = args.namespace.strip("/")
+    if not args.skip_validate:
+        log("tools/validate")
+        if subprocess.run([str(sl.ROOT / "tools" / "validate")], stdout=subprocess.DEVNULL).returncode:
+            raise Refused("tools/validate failed: refusing to publish (run it for the errors)")
+    wants = published_set()
+    if not wants:
+        raise Refused("the repository publishes nothing: refusing to empty the index")
+    target = oci.Registry(args.registry, plain_http=args.plain_http,
+                          username=os.environ.get("PUBLISH_REGISTRY_USERNAME"),
+                          password=os.environ.get("PUBLISH_REGISTRY_PASSWORD"))
+    live_digest, _, live = read_index(target, ns)
+    add, remove, keep = diff(wants, live, ns)
+    print(f"# oci://{args.registry}/{ns}/{INDEX_REPOSITORY}:{INDEX_TAG}"
+          f" ({live_digest or 'no index yet'})")
+    print_diff(add, remove, keep)
+
+    live_by_key = {(e["name"], e["version"]): e for e in live}
+    kept_bee: dict[tuple[str, str], bytes] = {}
+    for want in keep:
+        entry = live_by_key[want.key]
+        data = target.get_blob(entry["repository"], entry["package_digest"], entry["package_size"])
+        content = bee_content(data)
+        bad = tree_files_differ(content, want.directory)
+        if bad or (content["name"], content["version"]) != want.key:
+            raise Refused(f"{want.name}@{want.version} is published with other content than this tree "
+                          f"({', '.join(bad) or 'name/version'}); published versions are immutable: bump the version")
+        kept_bee[want.key] = data
+    endpoint = args.tree_endpoint or f"oci://{args.registry}/{ns}/{tp.TREE_REPOSITORY}"
+    shields = sl.load_shields()
+    tree = tp.read_tree(target, f"{ns}/{tp.TREE_REPOSITORY}")
+    tree_needed = not tp.current(tree, shields)
+    print(f"# {endpoint}:{tp.TREE_TAG} ({tree.digest or 'no tree yet'}, "
+          f"{len(tree.operations)} operations)")
+    if tree_needed or add or remove:
+        for op in tp.plan(tree, shields):
+            print(op.describe())
+    else:
+        print("= the tree holds what each kernel line should run")
+    if args.dry_run:
+        return 0
+    if not add and not remove and not tree_needed:
+        log("the index and the tree hold exactly the published set: nothing to push")
+        return 0
+
+    if not args.signer:
+        raise Refused("no --signer: publishing signs in KMS only, never with a key file; refusing")
+    if not args.cert or not args.shirudo_src:
+        raise Refused("--cert and --shirudo-src are needed to publish (or use --dry-run)")
+    args.shirudo_src = args.shirudo_src.resolve()
+    cert = args.cert.resolve()
+    if args.expect_cert_sha256 and sl.sha256_file(cert) != args.expect_cert_sha256.lower():
+        raise Refused(f"{cert} has sha256 {sl.sha256_file(cert)}, not --expect-cert-sha256")
+
+    with tempfile.TemporaryDirectory(prefix="shirudo-publish.") as tmp, SignerRelay(args.signer) as relay:
+        work = Path(tmp)
+        args.keys_dir = work / "keys"
+        args.keys_dir.mkdir()
+        shutil.copy(cert, args.keys_dir / "cert.der")
+        built = build_packages(wants, args, work, relay)
+        bees: list[tuple[Want, Path]] = []
+        signer = None
+        for want in wants:
+            fresh = bee_content(built[want.key].read_bytes())
+            check_fresh(want, fresh)
+            signer = fresh["signer"]
+            if want.key in kept_bee:
+                old = bee_content(kept_bee[want.key])
+                if old["files"] != fresh["files"] or old["payloads"] != fresh["payloads"]:
+                    raise Refused(f"{want.name}@{want.version}: the published package's upatches or files differ "
+                                  "from this tree's build; published versions are immutable: bump the version")
+                if old["signer"] != fresh["signer"]:
+                    raise Refused(f"{want.name}@{want.version} is published signed by {old['signer']}, "
+                                  f"not by --cert ({fresh['signer']}); bump the version to re-sign")
+                path = work / "kept" / built[want.key].name
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(kept_bee[want.key])
+                bees.append((want, path))
+            else:
+                bees.append((want, built[want.key]))
+        log(f"signer {signer}")
+        if add or remove:
+            final_digest = publish_index(ns, bees, wants, live_by_key, kept_bee, live_digest, target, args, relay)
+        else:
+            final_digest = live_digest
+            log("the index already lists exactly the published set")
+        ops = tp.plan(tree, shields)
+        tree_bees = tp.packages(target, ns, ops, work, tree_package_builder(args, relay), log)
+        expect = tp.wanted(shields, tp.known_builds(shields), tree.live())
+        tp.publish(target, ns, endpoint, tree, ops, tree_bees, tree_append(args, relay, endpoint), expect, log)
+    print(f"published oci://{args.registry}/{ns}/{INDEX_REPOSITORY}:{INDEX_TAG} {final_digest}")
+    return 0
+
+
+def publish_index(ns: str, bees: list[tuple[Want, Path]], wants: list[Want], live_by_key: dict,
+                  kept_bee: dict, live_digest: str | None, target: oci.Registry,
+                  args: argparse.Namespace, relay: SignerRelay) -> str:
+    with Staging() as staging:
+        push_to_staging(staging, ns, bees, args, relay)
+        sreg = staging.registry()
+        _, staged_doc, staged = read_index(sreg, ns)
+        got = sorted((e["name"], e["version"], e["repository"]) for e in staged)
+        expect = sorted((w.name, w.version, f"{ns}/{w.name}") for w in wants)
+        if got != expect:
+            raise Refused(f"the staging index lists {got}, expected {expect}")
+        for entry in staged:
+            key = (entry["name"], entry["version"])
+            if key in live_by_key and key in kept_bee:
+                old = live_by_key[key]
+                if (old["manifest_digest"], old["package_digest"]) != (entry["manifest_digest"], entry["package_digest"]):
+                    raise Refused(f"{key[0]}@{key[1]}: staging digests differ from the published ones")
+        if index_digest(target, ns) != live_digest:
+            raise Refused("the live index changed while publishing; run again")
+        promote(sreg, target, ns, staged, skip=set(kept_bee))
+        final_digest, final_doc, _ = read_index(target, ns)
+        if final_doc != staged_doc:
+            raise Refused("the target index does not read back as the one pushed")
+    return final_digest
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--registry", required=True, help="registry host[:port], e.g. registry.example.com")
+    parser.add_argument("--namespace", required=True,
+                        help="namespace of the index and packages, e.g. example/shields")
+    parser.add_argument("--cert", type=Path, help="the release certificate (DER) of the signer's key")
+    parser.add_argument("--signer", help="SHIRUDO_SIGNER command that signs with the release key, "
+                        "e.g. <shirudo-src>/tools/signers/<signer>")
+    parser.add_argument("--expect-cert-sha256", help="refuse unless --cert has this sha256")
+    parser.add_argument("--shirudo-src", type=Path, default=os.environ.get("SHIRUDO_SRC"),
+                        help="shirudo checkout with a built tools/shirudo-build/shirudo-build and vendor/")
+    parser.add_argument("--image", default=os.environ.get("SHIRUDO_BUILD_IMAGE")
+                        or sl.load_toml(sl.ROOT / "tools" / "build.lock")["image"])
+    parser.add_argument("--tree-endpoint", default=os.environ.get("SHIELD_TREE_ENDPOINT"),
+                        help="oci://<host>/<repository> where hosts read the upatch tree, "
+                        "e.g. oci://registry.example.com/shields/upatch-tree "
+                        "(default: <registry>/<namespace>/upatch-tree)")
+    parser.add_argument("--dry-run", action="store_true", help="print the diff, push nothing")
+    parser.add_argument("--plain-http", action="store_true", help="the target speaks plain HTTP (a loopback test registry)")
+    parser.add_argument("--skip-validate", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    try:
+        return run(args)
+    except (Refused, oci.OciError, tp.TreeError) as err:
+        log(f"error: {err}")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

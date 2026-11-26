@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://registry.conformal.co/schema/shield.schema.json",
+  "title": "shield.toml",
+  "description": "Metadata of one shield (shields/<CVE>-<slug>/shield.toml).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "package", "title", "cve_ids", "kind", "backend", "fixes", "hooks", "affected", "versions"],
+  "properties": {
+    "schema": {"const": 1},
+    "package": {
+      "description": "Equals [package].name in the Beefile.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,126}$"
+    },
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 40},
+    "title": {"type": "string", "minLength": 1, "maxLength": 500},
+    "cve_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/cve"}},
+    "aliases": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "kind": {"enum": ["PREVENTION", "DETECTION", "CONTAINMENT"]},
+    "backend": {"enum": ["BPF"]},
+    "withdrawn": {"$ref": "#/$defs/withdrawn", "description": "The whole shield is pulled: why, one line."},
+    "architectures": {
+      "description": "Default [\"x86_64\"].",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["x86_64", "aarch64"]}
+    },
+    "fixes": {
+      "description": "Upstream fix per CVE.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cve", "subject"],
+        "properties": {
+          "cve": {"$ref": "#/$defs/cve"},
+          "subject": {"type": "string", "minLength": 1},
+          "commit": {"type": "string", "pattern": "^[0-9a-f]{12,40}$"}
+        }
+      }
+    },
+    "hooks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["attach", "program", "binding", "needs_bpf_lsm"],
+        "properties": {
+          "attach": {
+            "type": "string",
+            "pattern": "^[a-z_]+(/[a-z0-9_]+)?$",
+            "description": "SEC() name, e.g. lsm/socket_create or cgroup_skb/ingress"
+          },
+          "program": {"type": "string", "pattern": "^[A-Za-z0-9._-]+\\.bpf\\.c$"},
+          "binding": {"enum": ["KERNEL_HOOK", "NETWORK"]},
+          "needs_bpf_lsm": {"type": "boolean"}
+        }
+      }
+    },
+    "affected": {
+      "description": "Per distro release and CVE: whether the vendor released a fixed kernel package, and which, as its tracker states at snapshot.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot", "fixes"],
+      "properties": {
+        "snapshot": {"type": "string", "format": "date"},
+        "note": {"type": "string"},
+        "fixes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["distro", "cve", "status"],
+            "properties": {
+              "distro": {"type": "string", "description": "A schema/distros.json id."},
+              "cve": {"$ref": "#/$defs/cve"},
+              "status": {
+                "description": "fixed: the vendor released the fixed packages in fixed; no-fix: affected, no fixed package released; not-affected; unknown: not checked with a vendor tracker, or inferred from the upstream version only.",
+                "enum": ["fixed", "no-fix", "not-affected", "unknown"]
+              },
+              "fixed": {
+                "description": "The first fixed package version of each release stream, oldest first, as the distro compares them (schema/distros.json compare), without the advisory. A running kernel is fixed when it is at or above the last one, or at or above one of the others within that one's stream (the same first release number, e.g. 611 in 5.14.0-611.54.1.el9_7).",
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "pattern": "^[0-9A-Za-z.+:~_-]+$"}
+              },
+              "kernel_package": {"type": "array", "items": {"type": "string", "minLength": 1}},
+              "source": {"type": ["string", "null"], "description": "The tracker or advisory URL."}
+            },
+            "if": {"properties": {"status": {"const": "fixed"}}},
+            "then": {"required": ["fixed"]},
+            "else": {"not": {"required": ["fixed"]}}
+          }
+        }
+      }
+    },
+    "relevance": {
+      "description": "Whether the shield matters on a host, evaluated by the installer in order: reachable (a check that fails means not reachable), fix_markers in the kernel package changelog, introduced/upstream_fixed on kernels that track upstream (schema/distros.json upstream_kernels), then affected.fixes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sources"],
+      "properties": {
+        "introduced": {"$ref": "#/$defs/kernel_branch"},
+        "fix_markers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 8, "maxLength": 200, "pattern": "^[^\\n\\t\\u001f]+$"}
+        },
+        "upstream_fixed": {
+          "type": "object",
+          "propertyNames": {"pattern": "^(mainline|[0-9]+\\.[0-9]+)$"},
+          "additionalProperties": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$"}
+        },
+        "reachable": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "module": {"type": "string", "pattern": "^[a-z0-9_-]{1,64}$"},
+              "sysctl": {"type": "string", "pattern": "^[a-z0-9_]+(\\.[a-z0-9_-]+)+$"},
+              "values": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[0-9A-Za-z_-]{1,32}$"}},
+              "file": {"type": "string", "pattern": "^/[A-Za-z0-9._/+-]{1,200}$"},
+              "note": {"type": "string"}
+            },
+            "oneOf": [
+              {
+                "required": ["module"],
+                "not": {"anyOf": [{"required": ["sysctl"]}, {"required": ["file"]}, {"required": ["values"]}]}
+              },
+              {
+                "required": ["sysctl", "values"],
+                "not": {"anyOf": [{"required": ["module"]}, {"required": ["file"]}]}
+              },
+              {
+                "required": ["file"],
+                "not": {"anyOf": [{"required": ["module"]}, {"required": ["sysctl"]}, {"required": ["values"]}]}
+              }
+            ]
+          },
+          "description": "module: built in, loaded, or present and not blocked in modprobe.d or module_blacklist=; sysctl: its value is one of values; file: the path exists."
+        },
+        "sources": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "note": {"type": "string"}
+      }
+    },
+    "versions": {
+      "description": "Revisions of the shield in semver (1.0.0 first; never a kernel version).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "lines"],
+        "properties": {
+          "version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"},
+          "withdrawn": {"$ref": "#/$defs/withdrawn"},
+          "lines": {
+            "description": "The kernel lines this version fits; one CO-RE build serves them all.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "kernel_release_prefix"],
+              "properties": {
+                "name": {"type": "string", "minLength": 1, "description": "e.g. \"6.8 (Ubuntu 24.04 generic)\"."},
+                "kernel_release_prefix": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "minLength": 1},
+                  "description": "uname -r prefixes, matched at a '.', a '-' or the end (\"6.1\" matches 6.1.0-44-cloud-amd64, not 6.10.3)."
+                },
+                "distros": {
+                  "description": "schema/distros.json ids the installer offers this line on; absent: any host whose uname -r matches.",
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {"type": "string"}
+                }
+              }
+            }
+          }
+        }
+      },
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "cve": {"type": "string", "pattern": "^CVE-\\d{4}-\\d{4,}$"},
+    "kernel_branch": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+    "withdrawn": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[^\\n]+$"}
+  }
+}

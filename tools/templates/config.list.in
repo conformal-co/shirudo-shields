@@ -1,0 +1,11 @@
+# @PACKAGE@ (@SLUG@) configuration, signed into the upatch's .rodata by
+# gen_config_rodata.py at `shirudo bpm build` and `shirudo bpm config update`.
+#
+# mode=enforce   TODO what is refused, and with which errno
+# mode=audit     allow it and count it in the @MAP@ map
+mode=enforce
+#
+# exempt_uid=<uid>  a kernel (initial user namespace) UID whose tasks are
+# not refused, one per line, at most 16. A task is exempt only when its real
+# and its effective UID are both listed. An exempt UID can still reach
+# @CVE@. None by default.

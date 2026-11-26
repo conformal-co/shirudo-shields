@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
+# Copyright (c) 2026 Conformal Shield Registry contributors
+"""CO-RE build of every shield's BPF object in a --network none container.
+
+    tools/build --shirudo-src DIR [--out DIR] [--image IMAGE] [shields/<dir> ...]
+    tools/build --libbpf DIR --vmlinux FILE --image IMAGE --unpinned [shields/<dir> ...]
+
+Pinned (releases): DIR is a Shirudo checkout with vendor/libbpf and
+vendor/linux/vmlinux.h matching tools/build.lock, built in its image.
+Unpinned (pull request CI): libbpf headers, a vmlinux.h and an image given
+explicitly (tools/ci/Dockerfile); a compile check only.
+
+Each upatch source is compiled twice with `shirudo build`'s flags and the
+objects must be identical; every program section must be an attachable
+kind and a hook of shield.toml; the rodata generator runs. Output:
+<out>/<shield>/<upatch>.bpf.o, .rodata.bin and <out>/build-manifest.json.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import shieldlib as sl  # noqa: E402
+
+INNER = r"""
+set -euo pipefail
+cd /build
+clang --version | head -1 > /out/.clang-version
+while IFS=$'\t' read -r parent dir src base symbol input generator; do
+	mkdir -p "/out/$dir"
+	for pass in a b; do
+		rm -rf "/build/$dir"
+		cp -r "/src/$parent/$dir" "/build/$dir"
+		( cd "/build/$dir" && clang $CFLAGS -I/vendor/linux -I/vendor/libbpf \
+			-fdebug-prefix-map=/build/$dir=. -c "$src" -o "/tmp/$pass.o" )
+	done
+	if ! cmp -s /tmp/a.o /tmp/b.o; then
+		echo "NOT REPRODUCIBLE: $dir/$src" >&2
+		exit 3
+	fi
+	cp /tmp/a.o "/out/$dir/$base.bpf.o"
+	# Program sections: every PROGBITS section that is not .text, .rodata, .maps, license or debug.
+	llvm-readelf --sections --wide "/out/$dir/$base.bpf.o" | sed -n 's/^ *\[ *[0-9]*\] \([^ ]*\) *PROGBITS .*/\1/p' | grep -vE '^(\.|license$)' > "/out/$dir/$base.sections" || true
+	if [ -n "$symbol" ]; then
+		( cd "/build/$dir" && python3 -I "$generator" --input "$input" --symbol "$symbol" --output "/out/$dir/$base.rodata.bin" )
+	fi
+done < /src-list/units.tsv
+"""
+
+
+def units(dirs: list[Path]) -> list[str]:
+    rows = []
+    for directory in dirs:
+        bee = sl.load_toml(directory / "Beefile")
+        for up in bee.get("upatches", []):
+            src = up["source"]
+            if not src.endswith(".bpf.c"):
+                continue
+            base = src.removesuffix(".bpf.c")
+            rodata = (up.get("rodata") or [{}])[0]
+            generator = rodata.get("generator", ["", ""])
+            rows.append("\t".join([
+                directory.parent.relative_to(sl.ROOT).as_posix(), directory.name, src, base, rodata.get("symbol", ""), rodata.get("input", ""),
+                generator[-1] if generator else "",
+            ]))
+    return rows
+
+
+def main(argv: list[str] | None = None) -> int:
+    lock = sl.load_toml(sl.ROOT / "tools" / "build.lock")
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("shields", nargs="*", type=Path)
+    parser.add_argument("--shirudo-src", type=Path, default=os.environ.get("SHIRUDO_SRC"))
+    parser.add_argument("--libbpf", type=Path, help="libbpf headers (a directory holding bpf/bpf_helpers.h); with --unpinned")
+    parser.add_argument("--vmlinux", type=Path, help="vmlinux.h; with --unpinned")
+    parser.add_argument("--unpinned", action="store_true",
+                        help="compile check with other inputs than tools/build.lock's (pull request CI)")
+    parser.add_argument("--image", default=os.environ.get("SHIRUDO_BUILD_IMAGE") or lock["image"])
+    parser.add_argument("--out", type=Path, default=sl.ROOT / "build")
+    args = parser.parse_args(argv)
+    if args.shirudo_src:
+        src = args.shirudo_src.resolve()
+        vmlinux = args.vmlinux or src / "vendor" / "linux" / "vmlinux.h"
+        libbpf = args.libbpf or src / "vendor" / "libbpf"
+    elif args.libbpf and args.vmlinux:
+        vmlinux, libbpf = args.vmlinux, args.libbpf
+    else:
+        parser.error("--shirudo-src (or SHIRUDO_SRC), or --libbpf and --vmlinux, is required")
+    vmlinux, libbpf = vmlinux.resolve(), libbpf.resolve()
+    if not vmlinux.is_file() or not (libbpf / "bpf" / "bpf_helpers.h").is_file():
+        parser.error(f"no vmlinux.h at {vmlinux} or no bpf/bpf_helpers.h under {libbpf}")
+    digest = sl.sha256_file(vmlinux)
+    if digest != lock["vmlinux_h_sha256"] and not args.unpinned:
+        parser.error(f"vmlinux.h sha256 {digest} != tools/build.lock {lock['vmlinux_h_sha256']} "
+                     "(a compile check with other inputs needs --unpinned)")
+    # The fork's coding rules for upatch BPF (shirudo build's flags): BPF ISA v4,
+    # no jump tables (the verifier of older kernels rejects gotox/indirect jumps).
+    for flag in ("-target", "bpf", "-mcpu=v4", "-fno-jump-tables", "-O2", "-g"):
+        if flag not in lock["cflags"]:
+            parser.error(f"tools/build.lock cflags lack {flag}: they must be shirudo build's flags")
+
+    dirs = [p.resolve() for p in args.shields] or sl.shield_dirs()
+    rows = units(dirs)
+    out = args.out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        print("build: no shields to build")
+        return 0
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "units.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+        (Path(tmp) / "inner.sh").write_text(INNER, encoding="utf-8")
+        cmd = [
+            "docker", "run", "--rm", "--network", "none",
+            "--read-only", "--tmpfs", "/build", "--tmpfs", "/tmp",
+            "-u", f"{os.getuid()}:{os.getgid()}",
+            "-e", "CFLAGS=" + " ".join(shlex.quote(f) for f in lock["cflags"]),
+            "-v", f"{sl.ROOT}:/src:ro",
+            "-v", f"{vmlinux.parent}:/vendor/linux:ro",
+            "-v", f"{libbpf}:/vendor/libbpf:ro",
+            "-v", f"{tmp}:/src-list:ro",
+            "-v", f"{out}:/out",
+            args.image, "bash", "/src-list/inner.sh",
+        ]
+        run = subprocess.run(cmd)
+        if run.returncode != 0:
+            print(f"build: failed (exit {run.returncode})", file=sys.stderr)
+            return 1
+
+    manifest = {
+        "image": args.image,
+        "shirudo_commit": lock["shirudo_commit"],
+        "vmlinux_h_sha256": digest,
+        "pinned": not args.unpinned and args.image == lock["image"] and digest == lock["vmlinux_h_sha256"],
+        "clang": (out / ".clang-version").read_text(encoding="utf-8").strip(),
+        "cflags": lock["cflags"],
+        "network": "none",
+        "reproducible": "each object compiled twice, byte-identical",
+        "objects": {},
+    }
+    failed = False
+    for row in rows:
+        parent, directory, srcname, base = row.split("\t")[:4]
+        obj = out / directory / f"{base}.bpf.o"
+        sections = (out / directory / f"{base}.sections").read_text(encoding="utf-8").split()
+        entry = {"source": f"{parent}/{directory}/{srcname}", "sha256": sl.sha256_file(obj), "sections": sections}
+        rodata = out / directory / f"{base}.rodata.bin"
+        if rodata.is_file():
+            entry["rodata_sha256"] = sl.sha256_file(rodata)
+        manifest["objects"][f"{directory}/{base}.bpf.o"] = entry
+        meta = sl.load_toml(sl.ROOT / parent / directory / "shield.toml")
+        for hook in meta["hooks"]:
+            if hook["program"] == srcname and hook["attach"] not in sections:
+                print(f"build: {directory}/{base}.bpf.o has no section {hook['attach']} "
+                      "(shield.toml [[hooks]] names it)", file=sys.stderr)
+                failed = True
+        hooks = {h["attach"] for h in meta["hooks"] if h["program"] == srcname}
+        for section in sections:
+            if not sl.attach_supported(section):
+                print(f"build: {directory}/{base}.bpf.o: section {section!r} is not a kind the Shirudo "
+                      "stock-kernel port attaches (tools/shieldlib.py ATTACH_*)", file=sys.stderr)
+                failed = True
+            elif section not in hooks:
+                print(f"build: {directory}/{base}.bpf.o: section {section!r} is not in shield.toml [[hooks]] "
+                      f"for {srcname}", file=sys.stderr)
+                failed = True
+        print(f"{entry['sha256']}  {directory}/{base}.bpf.o  {' '.join(sections)}")
+    (out / ".clang-version").unlink(missing_ok=True)
+    (out / "build-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"build: {len(rows)} object(s), manifest {out / 'build-manifest.json'}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

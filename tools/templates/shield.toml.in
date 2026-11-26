@@ -1,0 +1,30 @@
+schema = 1
+package = "@PACKAGE@"
+display_name = "TODO short bug name"
+title = "TODO one line: what it refuses"
+cve_ids = ["@CVE@"]
+aliases = []
+kind = "PREVENTION"
+backend = "BPF"
+
+[[fixes]]
+cve = "@CVE@"
+subject = "TODO upstream fix subject"
+
+[[hooks]]
+attach = "@ATTACH@"
+program = "@SLUG@.bpf.c"
+binding = "KERNEL_HOOK"
+needs_bpf_lsm = true
+
+# One row per distro release and CVE, from the vendor trackers.
+[affected]
+snapshot = "@DATE@"
+fixes = []
+
+[[versions]]
+version = "1.0.0"
+
+[[versions.lines]]
+name = "TODO kernel line, e.g. 6.8 (Ubuntu 24.04 generic)"
+kernel_release_prefix = ["6.8.0"]

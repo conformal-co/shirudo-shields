@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: A shield can be bypassed, or misses a path (private)
+    url: https://github.com/conformal-co/shirudo-shields/security/advisories/new
+    about: Report bypasses and embargoed CVEs privately, never in a public issue. See SECURITY.md.
+  - name: A bug in Shirudo or its stock-kernel port
+    url: https://github.com/conformal-co/shirudo-today/issues
+    about: The loader, the installer and the CLI live in shirudo-today.

@@ -1,0 +1,37 @@
+# @PACKAGE@: TODO short bug name (@CVE@)
+
+TODO: the bug in two or three sentences.
+
+## How it works
+
+TODO: the `@SLUG@` upatch, `@ATTACH@`: exactly what it refuses, with which
+errno, and why that condition is what the bug needs.
+
+## What breaks
+
+TODO: every legitimate use that loses the refused operation; what keeps
+working.
+
+## Not covered
+
+- TODO: one item per gap.
+- On a stock kernel, root can detach the program.
+
+## Kernels
+
+TODO: the kernel lines (Beefile selector) and requirements (BPF LSM,
+architecture). Tested on vulnerable vendor kernels of every listed line.
+
+## Install
+
+```
+sudo shirudo bpm install conformal/@PACKAGE@@1.0.0
+sudo shirudo upatch map @SLUG@ @MAP@   # counters: refused, audited, exempted
+```
+
+Signed defaults (`config.list`): `mode=enforce` (or `audit`), `exempt_uid=<uid>`
+(up to 16). Other settings need a package signed with your own key.
+
+## References
+
+- @CVE@; fix: TODO commit ("TODO subject")

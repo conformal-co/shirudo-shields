@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
+/*
+ * Copyright (c) @YEAR@ Conformal Shield Registry contributors
+ *
+ * @CVE@: TODO one paragraph: the bug, the precondition this upatch
+ * removes, and why @ATTACH@ runs before the vulnerable code.
+ *
+ * Signed configuration in .rodata (gen_config_rodata.py from
+ * config.list, `shirudo bpm config update` to change it):
+ *
+ *   mode        enforce (default): refuse with -EPERM.
+ *               audit: allow and count.
+ *   exempt_uid  up to 16 kernel (initial user namespace) UIDs whose tasks
+ *               are not refused. A task is exempt only when both its real
+ *               and its effective UID are listed.
+ *
+ * Per-CPU counters in @MAP@: refused, audited, exempted.
+ */
+
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
+
+#define EPERM			1
+#define MODE_AUDIT		1
+#define EXEMPT_MAX		16
+
+char _license[] SEC("license") = "Dual BSD/GPL";
+
+/* Layout shared with gen_config_rodata.py: 72 bytes, little endian. */
+struct @SYMBOL@ {
+	__u32	mode;
+	__u32	nr_exempt;
+	__u32	exempt_uid[EXEMPT_MAX];
+};
+
+const volatile struct @SYMBOL@ @SYMBOL@ = {};
+
+struct shield_stats {
+	__u64	refused;
+	__u64	audited;
+	__u64	exempted;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct shield_stats);
+} @MAP@ SEC(".maps");
+
+static __always_inline bool uid_listed(__u32 uid)
+{
+	__u32 i, nr = @SYMBOL@.nr_exempt;
+
+	for (i = 0; i < EXEMPT_MAX; i++) {
+		if (i >= nr)
+			break;
+		if (@SYMBOL@.exempt_uid[i] == uid)
+			return true;
+	}
+	return false;
+}
+
+static __always_inline bool task_exempt(void)
+{
+	struct task_struct *task;
+	__u32 uid, euid;
+
+	if (!@SYMBOL@.nr_exempt)
+		return false;
+	uid = (__u32)bpf_get_current_uid_gid();
+	if (!uid_listed(uid))
+		return false;
+	task = bpf_get_current_task_btf();
+	euid = BPF_CORE_READ(task, cred, euid.val);
+	return euid == uid || uid_listed(euid);
+}
+
+/* TODO: the hook's arguments, as in include/linux/lsm_hook_defs.h. */
+SEC("@ATTACH@")
+int BPF_PROG(@FUNC@)
+{
+	struct shield_stats *s;
+	__u32 key = 0;
+
+	/* TODO: return 0 unless this call is the precondition of @CVE@. */
+	return 0;
+
+	s = bpf_map_lookup_elem(&@MAP@, &key);
+	if (task_exempt()) {
+		if (s)
+			__sync_fetch_and_add(&s->exempted, 1);
+		return 0;
+	}
+	if (@SYMBOL@.mode == MODE_AUDIT) {
+		if (s)
+			__sync_fetch_and_add(&s->audited, 1);
+		return 0;
+	}
+	if (s)
+		__sync_fetch_and_add(&s->refused, 1);
+	return -EPERM;
+}

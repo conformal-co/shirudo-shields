@@ -1,0 +1,31 @@
+[package]
+name = "@PACKAGE@"
+description = "TODO one line: what it refuses (@CVE@), with signed enforce/audit mode and UID exemptions"
+license = "GPL-2.0 OR BSD-2-Clause"
+authors = ["Conformal Shield Registry contributors"]
+
+[[files]]
+source = "config.list"
+
+[[files]]
+source = "gen_config_rodata.py"
+
+[[upatches]]
+source = "@SLUG@.bpf.c"
+
+[[upatches.rodata]]
+symbol = "@SYMBOL@"
+input = "config.list"
+generator = ["python3", "gen_config_rodata.py"]
+update = ["python3", "gen_config_rodata.py"]
+
+[upatches.tree]
+id = "@SLUG@"
+
+# The kernel lines (shield.toml [[versions.lines]]); a prefix matches
+# uname -r at a ".", "-" or the end.
+[upatches.tree.selector]
+kernel_release_prefix = ["6.8.0"]
+
+[upatches.tree.selector.kconfig]
+CONFIG_BPF_LSM = ["y"]
