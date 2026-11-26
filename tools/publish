@@ -10,6 +10,11 @@ Published: each shield's newest version, unless it or the shield is
 withdrawn. <NS>/bpm-index:stable then lists exactly those packages at
 <NS>/<package>; every other entry is removed.
 
+The signed index names each package by the repository hosts pull it from,
+<PUB>/<package>: --public-namespace, by default the namespace of
+--tree-endpoint (oci://<host>/<PUB>/upatch-tree), else <NS>. Pushes go to
+<NS>; the host serving <PUB> maps it there.
+
   1. tools/validate must pass.
   2. Diff the live index (+ add, - remove, = keep). A kept version is
      immutable: its Beefile, README.md and files must equal this tree's.
@@ -229,12 +234,12 @@ def version_key(version: str) -> tuple:
         return (0, (), version)
 
 
-def diff(wants: list[Want], live: list[dict[str, Any]], ns: str) -> tuple[list[Want], list[dict[str, Any]], list[Want]]:
+def diff(wants: list[Want], live: list[dict[str, Any]], pub: str) -> tuple[list[Want], list[dict[str, Any]], list[Want]]:
     live_by_key = {(e.get("name"), e.get("version")): e for e in live}
     add, keep = [], []
     for want in wants:
         entry = live_by_key.get(want.key)
-        if entry and entry.get("repository") == f"{ns}/{want.name}":
+        if entry and entry.get("repository") == f"{pub}/{want.name}":
             keep.append(want)
         else:
             add.append(want)
@@ -450,12 +455,12 @@ class Staging:
         return oci.Registry(f"127.0.0.1:{self.port}", plain_http=True)
 
 
-def push_to_staging(staging: Staging, ns: str, bees: list[tuple[Want, Path]], args: argparse.Namespace,
+def push_to_staging(staging: Staging, pub: str, bees: list[tuple[Want, Path]], args: argparse.Namespace,
                     relay: SignerRelay) -> None:
     lines = ["set -eu", "export BPM_OCI_SCHEME=http"]
     for i, (want, path) in enumerate(bees):
         flag = " --new-index" if i == 0 else ""
-        lines.append(f"/opt/shirudo-build bpm push /bee/{path.name} oci://127.0.0.1:5000/{ns}/{want.name} --keys-dir /keys{flag}")
+        lines.append(f"/opt/shirudo-build bpm push /bee/{path.name} oci://127.0.0.1:5000/{pub}/{want.name} --keys-dir /keys{flag}")
     with tempfile.TemporaryDirectory() as tmp:
         bee_dir = Path(tmp) / "bee"
         bee_dir.mkdir()
@@ -473,29 +478,37 @@ def push_to_staging(staging: Staging, ns: str, bees: list[tuple[Want, Path]], ar
 
 
 def promote(staging: oci.Registry, target: oci.Registry, ns: str,
-            entries: list[dict[str, Any]], skip: set[tuple[str, str]]) -> None:
+            entries: list[dict[str, Any]], skip: set[tuple[str, str]], pub: str) -> None:
+    """Staging holds everything under <pub>; the target gets it under <ns>."""
     for entry in entries:
         key = (entry["name"], entry["version"])
-        repo = entry["repository"]
+        src, dst = entry["repository"], f"{ns}/{entry['name']}"
         if key in skip:
             continue
-        log(f"copy {repo}@{entry['manifest_digest']} (tag {entry['version']})")
-        oci.copy_manifest(staging, target, repo, entry["manifest_digest"], [entry["version"]])
-        for ref in staging.referrers(repo, entry["manifest_digest"]):
+        log(f"copy {dst}@{entry['manifest_digest']} (tag {entry['version']})")
+        tp.copy(staging, src, target, dst, entry["manifest_digest"], [entry["version"]])
+        for ref in staging.referrers(src, entry["manifest_digest"]):
             try:
-                oci.copy_manifest(staging, target, repo, ref["digest"], [])
+                tp.copy(staging, src, target, dst, ref["digest"], [])
             except oci.OciError as err:  # the certificate referrer is not read by shirudo
-                log(f"warning: referrer {ref['digest']} of {repo} not copied: {err}")
-    repo = f"{ns}/{INDEX_REPOSITORY}"
-    body, digest, media = staging.get_manifest(repo, INDEX_TAG)
-    for desc in oci.manifest_blobs(body):
-        target.put_blob(repo, staging.get_blob(repo, desc["digest"], desc.get("size")), desc["digest"])
-    target.put_manifest(repo, digest, body, media)
-    target.put_manifest(repo, INDEX_TAG, body, media)
+                log(f"warning: referrer {ref['digest']} of {dst} not copied: {err}")
+    src, repo = f"{pub}/{INDEX_REPOSITORY}", f"{ns}/{INDEX_REPOSITORY}"
+    digest = tp.copy(staging, src, target, repo, INDEX_TAG, [INDEX_TAG])
     log(f"{repo}:{INDEX_TAG} -> {digest}")
 
 
 # ------------------------------------------------------------ main
+
+
+def public_namespace(args: argparse.Namespace, ns: str) -> str:
+    """The namespace hosts pull packages from, as the signed index names it."""
+    if args.public_namespace:
+        return args.public_namespace.strip("/")
+    if args.tree_endpoint:
+        _, repo = tp.parse_endpoint(args.tree_endpoint)
+        if repo.rsplit("/", 1)[-1] == tp.TREE_REPOSITORY and "/" in repo:
+            return repo.rsplit("/", 1)[0]
+    return ns
 
 
 def run(args: argparse.Namespace) -> int:
@@ -510,17 +523,18 @@ def run(args: argparse.Namespace) -> int:
     target = oci.Registry(args.registry, plain_http=args.plain_http,
                           username=os.environ.get("PUBLISH_REGISTRY_USERNAME"),
                           password=os.environ.get("PUBLISH_REGISTRY_PASSWORD"))
+    pub = public_namespace(args, ns)
     live_digest, _, live = read_index(target, ns)
-    add, remove, keep = diff(wants, live, ns)
+    add, remove, keep = diff(wants, live, pub)
     print(f"# oci://{args.registry}/{ns}/{INDEX_REPOSITORY}:{INDEX_TAG}"
-          f" ({live_digest or 'no index yet'})")
+          f" ({live_digest or 'no index yet'}, packages named {pub}/<package>)")
     print_diff(add, remove, keep)
 
     live_by_key = {(e["name"], e["version"]): e for e in live}
     kept_bee: dict[tuple[str, str], bytes] = {}
     for want in keep:
         entry = live_by_key[want.key]
-        data = target.get_blob(entry["repository"], entry["package_digest"], entry["package_size"])
+        data = target.get_blob(f"{ns}/{want.name}", entry["package_digest"], entry["package_size"])
         content = bee_content(data)
         bad = tree_files_differ(content, want.directory)
         if bad or (content["name"], content["version"]) != want.key:
@@ -589,7 +603,7 @@ def run(args: argparse.Namespace) -> int:
                 bees.append((want, built[want.key]))
         log(f"signer {signer}")
         if add or remove:
-            final_digest = publish_index(ns, bees, wants, live_by_key, kept_bee, live_digest, target, args, relay)
+            final_digest = publish_index(ns, pub, bees, wants, live_by_key, kept_bee, live_digest, target, args, relay)
         else:
             final_digest = live_digest
             log("the index already lists exactly the published set")
@@ -603,15 +617,15 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
-def publish_index(ns: str, bees: list[tuple[Want, Path]], wants: list[Want], live_by_key: dict,
+def publish_index(ns: str, pub: str, bees: list[tuple[Want, Path]], wants: list[Want], live_by_key: dict,
                   kept_bee: dict, live_digest: str | None, target: oci.Registry,
                   args: argparse.Namespace, relay: SignerRelay) -> str:
     with Staging() as staging:
-        push_to_staging(staging, ns, bees, args, relay)
+        push_to_staging(staging, pub, bees, args, relay)
         sreg = staging.registry()
-        _, staged_doc, staged = read_index(sreg, ns)
+        _, staged_doc, staged = read_index(sreg, pub)
         got = sorted((e["name"], e["version"], e["repository"]) for e in staged)
-        expect = sorted((w.name, w.version, f"{ns}/{w.name}") for w in wants)
+        expect = sorted((w.name, w.version, f"{pub}/{w.name}") for w in wants)
         if got != expect:
             raise Refused(f"the staging index lists {got}, expected {expect}")
         for entry in staged:
@@ -622,7 +636,7 @@ def publish_index(ns: str, bees: list[tuple[Want, Path]], wants: list[Want], liv
                     raise Refused(f"{key[0]}@{key[1]}: staging digests differ from the published ones")
         if index_digest(target, ns) != live_digest:
             raise Refused("the live index changed while publishing; run again")
-        promote(sreg, target, ns, staged, skip=set(kept_bee))
+        promote(sreg, target, ns, staged, skip=set(kept_bee), pub=pub)
         final_digest, final_doc, _ = read_index(target, ns)
         if final_doc != staged_doc:
             raise Refused("the target index does not read back as the one pushed")
@@ -647,6 +661,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="oci://<host>/<repository> where hosts read the upatch tree, "
                         "e.g. oci://registry.example.com/shields/upatch-tree "
                         "(default: <registry>/<namespace>/upatch-tree)")
+    parser.add_argument("--public-namespace", default=os.environ.get("SHIELD_PUBLIC_NAMESPACE"),
+                        help="namespace the signed index names packages under, the one hosts pull from "
+                        "(default: the namespace of --tree-endpoint, else --namespace)")
     parser.add_argument("--dry-run", action="store_true", help="print the diff, push nothing")
     parser.add_argument("--plain-http", action="store_true", help="the target speaks plain HTTP (a loopback test registry)")
     parser.add_argument("--skip-validate", action="store_true", help=argparse.SUPPRESS)
