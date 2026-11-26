@@ -1177,6 +1177,46 @@
           "source": "https://ubuntu.com/security/CVE-2026-98432"
         },
         {
+          "distro": "ubuntu2404-hwe-6.17",
+          "name": "Ubuntu 24.04 HWE (6.17 generic, linux-hwe-6.17)",
+          "cve": "CVE-2026-98432",
+          "status": "no-fix",
+          "fixed": [],
+          "kernel_package": [
+            "linux-image-*-generic"
+          ],
+          "compare": "dpkg",
+          "line_guard": true,
+          "os_release_id": [
+            "ubuntu"
+          ],
+          "version_id": "24.04",
+          "variant_id": null,
+          "uname_regex": "^6\\.17\\.0-[0-9]+-generic$",
+          "uname_not_regex": null,
+          "source": "https://ubuntu.com/security/CVE-2026-98432"
+        },
+        {
+          "distro": "ubuntu2404-oem-6.17",
+          "name": "Ubuntu 24.04 OEM (6.17, linux-oem-6.17)",
+          "cve": "CVE-2026-98432",
+          "status": "no-fix",
+          "fixed": [],
+          "kernel_package": [
+            "linux-image-*-oem"
+          ],
+          "compare": "dpkg",
+          "line_guard": true,
+          "os_release_id": [
+            "ubuntu"
+          ],
+          "version_id": "24.04",
+          "variant_id": null,
+          "uname_regex": "^6\\.17\\.0-[0-9]+-oem$",
+          "uname_not_regex": null,
+          "source": "https://ubuntu.com/security/CVE-2026-98432"
+        },
+        {
           "distro": "ubuntu2604",
           "name": "Ubuntu 26.04",
           "cve": "CVE-2026-98432",
@@ -1977,6 +2017,46 @@
           "version_id": "24.04",
           "variant_id": null,
           "uname_regex": "^7\\.0\\.0-[0-9]+-azure$",
+          "uname_not_regex": null,
+          "source": "https://ubuntu.com/security/CVE-2026-99567"
+        },
+        {
+          "distro": "ubuntu2404-hwe-6.17",
+          "name": "Ubuntu 24.04 HWE (6.17 generic, linux-hwe-6.17)",
+          "cve": "CVE-2026-99567",
+          "status": "no-fix",
+          "fixed": [],
+          "kernel_package": [
+            "linux-image-*-generic"
+          ],
+          "compare": "dpkg",
+          "line_guard": true,
+          "os_release_id": [
+            "ubuntu"
+          ],
+          "version_id": "24.04",
+          "variant_id": null,
+          "uname_regex": "^6\\.17\\.0-[0-9]+-generic$",
+          "uname_not_regex": null,
+          "source": "https://ubuntu.com/security/CVE-2026-99567"
+        },
+        {
+          "distro": "ubuntu2404-oem-6.17",
+          "name": "Ubuntu 24.04 OEM (6.17, linux-oem-6.17)",
+          "cve": "CVE-2026-99567",
+          "status": "no-fix",
+          "fixed": [],
+          "kernel_package": [
+            "linux-image-*-oem"
+          ],
+          "compare": "dpkg",
+          "line_guard": true,
+          "os_release_id": [
+            "ubuntu"
+          ],
+          "version_id": "24.04",
+          "variant_id": null,
+          "uname_regex": "^6\\.17\\.0-[0-9]+-oem$",
           "uname_not_regex": null,
           "source": "https://ubuntu.com/security/CVE-2026-99567"
         },
