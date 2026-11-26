@@ -18,8 +18,8 @@
           "targets": [
             {
               "product": "Linux kernel",
-              "component": "AlmaLinux 9",
-              "versions": "< 5.14.0-611.49.2.el9_7 || < 5.14.0-687.5.3.el9_8",
+              "component": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
+              "versions": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/socket_bind; needs BPF LSM",
@@ -30,32 +30,8 @@
             },
             {
               "product": "Linux kernel",
-              "component": "CentOS Stream 9",
-              "versions": "< 5.14.0-611.54.1.el9_7 || < 5.14.0-687.5.3.el9_8",
-              "architecture": "x86_64",
-              "binding": "KERNEL_HOOK",
-              "binding_detail": "lsm/socket_bind; needs BPF LSM",
-              "kernel_line": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
-              "kernel_release_prefix": [
-                "5.14.0"
-              ]
-            },
-            {
-              "product": "Linux kernel",
-              "component": "Oracle Linux 9 RHCK",
-              "versions": "< 5.14.0-611.54.1.el9_7 || < 5.14.0-687.5.3.el9_8",
-              "architecture": "x86_64",
-              "binding": "KERNEL_HOOK",
-              "binding_detail": "lsm/socket_bind; needs BPF LSM",
-              "kernel_line": "5.14 (RHEL 9, Alma, Rocky, CentOS Stream 9, Oracle RHCK)",
-              "kernel_release_prefix": [
-                "5.14.0"
-              ]
-            },
-            {
-              "product": "Linux kernel",
-              "component": "Amazon Linux 2023",
-              "versions": "< 6.1.168-203.330",
+              "component": "6.1 (Debian 12, Amazon Linux 2023)",
+              "versions": "6.1 (Debian 12, Amazon Linux 2023)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/socket_bind; needs BPF LSM",
@@ -66,44 +42,56 @@
             },
             {
               "product": "Linux kernel",
-              "component": "Debian 12 (cloud)",
-              "versions": "< 6.1.170-1",
-              "architecture": "x86_64",
-              "binding": "KERNEL_HOOK",
-              "binding_detail": "lsm/socket_bind; needs BPF LSM",
-              "kernel_line": "6.1 (Debian 12, Amazon Linux 2023)",
-              "kernel_release_prefix": [
-                "6.1"
-              ]
-            },
-            {
-              "product": "Linux kernel",
-              "component": "openSUSE Leap 15.6",
-              "versions": "< 6.4.0-150600.23.100.1",
+              "component": "6.4 (openSUSE Leap 15.6)",
+              "versions": "6.4 (openSUSE Leap 15.6)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/socket_bind; needs BPF LSM",
               "kernel_line": "6.4 (openSUSE Leap 15.6)",
               "kernel_release_prefix": [
-                "6.4.0"
+                "6.4"
               ]
             },
             {
               "product": "Linux kernel",
-              "component": "Ubuntu 24.04 (6.8 generic)",
-              "versions": "< 6.8.0-117.117",
+              "component": "6.6 (longterm)",
+              "versions": "6.6 (longterm)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/socket_bind; needs BPF LSM",
-              "kernel_line": "6.8 (Ubuntu 24.04 generic, linux-aws/gcp/azure-lts-24.04)",
+              "kernel_line": "6.6 (longterm)",
               "kernel_release_prefix": [
-                "6.8.0"
+                "6.6"
               ]
             },
             {
               "product": "Linux kernel",
-              "component": "CentOS Stream 10",
-              "versions": "< 6.12.0-124.55.1.el10_1 || < 6.12.0-211.7.3.el10_2",
+              "component": "6.8 (Ubuntu 24.04 generic and cloud)",
+              "versions": "6.8 (Ubuntu 24.04 generic and cloud)",
+              "architecture": "x86_64",
+              "binding": "KERNEL_HOOK",
+              "binding_detail": "lsm/socket_bind; needs BPF LSM",
+              "kernel_line": "6.8 (Ubuntu 24.04 generic and cloud)",
+              "kernel_release_prefix": [
+                "6.8"
+              ]
+            },
+            {
+              "product": "Linux kernel",
+              "component": "6.11 (Ubuntu 24.04 HWE/OEM 6.11)",
+              "versions": "6.11 (Ubuntu 24.04 HWE/OEM 6.11)",
+              "architecture": "x86_64",
+              "binding": "KERNEL_HOOK",
+              "binding_detail": "lsm/socket_bind; needs BPF LSM",
+              "kernel_line": "6.11 (Ubuntu 24.04 HWE/OEM 6.11)",
+              "kernel_release_prefix": [
+                "6.11"
+              ]
+            },
+            {
+              "product": "Linux kernel",
+              "component": "6.12 (RHEL 10, Debian 13, UEK8, Leap 16.0, Flatcar)",
+              "versions": "6.12 (RHEL 10, Debian 13, UEK8, Leap 16.0, Flatcar)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/socket_bind; needs BPF LSM",
@@ -114,26 +102,38 @@
             },
             {
               "product": "Linux kernel",
-              "component": "Debian 13 (cloud)",
-              "versions": "< 6.12.85-1",
+              "component": "6.14 (Ubuntu 24.04 HWE/OEM 6.14)",
+              "versions": "6.14 (Ubuntu 24.04 HWE/OEM 6.14)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/socket_bind; needs BPF LSM",
-              "kernel_line": "6.12 (RHEL 10, Debian 13, UEK8, Leap 16.0, Flatcar)",
+              "kernel_line": "6.14 (Ubuntu 24.04 HWE/OEM 6.14)",
               "kernel_release_prefix": [
-                "6.12"
+                "6.14"
               ]
             },
             {
               "product": "Linux kernel",
-              "component": "Oracle Linux 9 UEK8",
-              "versions": "< 6.12.0-201.74.2.2.el9uek",
+              "component": "6.17 (Ubuntu 24.04 HWE/OEM 6.17)",
+              "versions": "6.17 (Ubuntu 24.04 HWE/OEM 6.17)",
               "architecture": "x86_64",
               "binding": "KERNEL_HOOK",
               "binding_detail": "lsm/socket_bind; needs BPF LSM",
-              "kernel_line": "6.12 (RHEL 10, Debian 13, UEK8, Leap 16.0, Flatcar)",
+              "kernel_line": "6.17 (Ubuntu 24.04 HWE/OEM 6.17)",
               "kernel_release_prefix": [
-                "6.12"
+                "6.17"
+              ]
+            },
+            {
+              "product": "Linux kernel",
+              "component": "6.18 (longterm)",
+              "versions": "6.18 (longterm)",
+              "architecture": "x86_64",
+              "binding": "KERNEL_HOOK",
+              "binding_detail": "lsm/socket_bind; needs BPF LSM",
+              "kernel_line": "6.18 (longterm)",
+              "kernel_release_prefix": [
+                "6.18"
               ]
             }
           ]
@@ -179,6 +179,50 @@
           "version_id": "24.04",
           "variant_id": null,
           "uname_regex": "^7\\.0\\.0-[0-9]+-generic$",
+          "uname_not_regex": null,
+          "source": "https://ubuntu.com/security/CVE-2026-31431"
+        },
+        {
+          "distro": "ubuntu2404-hwe-6.17",
+          "name": "Ubuntu 24.04 HWE (6.17 generic, linux-hwe-6.17)",
+          "cve": "CVE-2026-31431",
+          "status": "fixed",
+          "fixed": [
+            "6.17.0-29.29~24.04.1"
+          ],
+          "kernel_package": [
+            "linux-image-*-generic"
+          ],
+          "compare": "dpkg",
+          "line_guard": true,
+          "os_release_id": [
+            "ubuntu"
+          ],
+          "version_id": "24.04",
+          "variant_id": null,
+          "uname_regex": "^6\\.17\\.0-[0-9]+-generic$",
+          "uname_not_regex": null,
+          "source": "https://ubuntu.com/security/CVE-2026-31431"
+        },
+        {
+          "distro": "ubuntu2404-oem-6.17",
+          "name": "Ubuntu 24.04 OEM (6.17, linux-oem-6.17)",
+          "cve": "CVE-2026-31431",
+          "status": "fixed",
+          "fixed": [
+            "6.17.0-1023.23"
+          ],
+          "kernel_package": [
+            "linux-image-*-oem"
+          ],
+          "compare": "dpkg",
+          "line_guard": true,
+          "os_release_id": [
+            "ubuntu"
+          ],
+          "version_id": "24.04",
+          "variant_id": null,
+          "uname_regex": "^6\\.17\\.0-[0-9]+-oem$",
           "uname_not_regex": null,
           "source": "https://ubuntu.com/security/CVE-2026-31431"
         },
